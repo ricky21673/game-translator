@@ -1,6 +1,7 @@
-# 測試 GUI 狀態機（can_start）：不建立 QWidget，headless 環境下可跑。
+# 測試 GUI 狀態機（can_start、choose_translator_mode）：
+# 不建立 QWidget，headless 環境下可跑。
 from core.detector import Detection
-from gui.app import can_start
+from gui.app import can_start, choose_translator_mode
 
 
 def test_no_selection_cannot_start():
@@ -21,3 +22,24 @@ def test_unknown_cannot_start():
 def test_unity_cannot_start_in_p1():
     # P1 尚未支援 Unity → 不能開始
     assert can_start(Detection("unity", "/g")) is False
+
+
+def test_only_dict_json_chooses_offline():
+    # 只選了字典 JSON、沒填 key → 離線字典模式
+    assert choose_translator_mode("/g/dict.json", "") == "offline"
+
+
+def test_only_key_chooses_deepl():
+    # 只填了 key、沒選字典 JSON → DeepL 模式
+    assert choose_translator_mode(None, "sk-xxx") == "deepl"
+
+
+def test_both_dict_and_key_chooses_deepl_with_seed():
+    # 兩者都有 → 仍走 DeepL（字典 JSON 當作種子快取，由呼叫端負責複製）
+    assert choose_translator_mode("/g/dict.json", "sk-xxx") == "deepl"
+
+
+def test_neither_chooses_none():
+    # 都沒有 → 不可啟動
+    assert choose_translator_mode(None, "") == "none"
+    assert choose_translator_mode("", "") == "none"

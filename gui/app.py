@@ -3,6 +3,7 @@
 import glob
 import json
 import os
+import shutil
 
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
@@ -14,6 +15,7 @@ from core.cache import DictCache
 from core.pipeline import Pipeline
 from core.server import TranslationServer
 from core.translators.deepl import DeepLTranslator
+from core.translators.null import NullTranslator
 from launcher import deploy_mv_adapter, launch_game
 
 SUPPORTED = ("mv",)  # P1 只支援 MV
@@ -31,6 +33,22 @@ def can_start(detection: Detection | None, engine_supported=SUPPORTED) -> bool:
     return detection.engine in engine_supported
 
 
+def choose_translator_mode(dict_path: str | None, key: str) -> str:
+    """
+    離線字典模式的核心決策（純函式，不碰檔案/網路，方便單測）：
+    - 有選字典 JSON 且沒填 key → "offline"（離線字典模式，NullTranslator）
+    - 有填 key（不論是否也選了字典 JSON）→ "deepl"（DeepL，若同時選了字典 JSON 則帶種子快取）
+    - 兩者都沒有 → "none"（不可啟動）
+    """
+    has_dict = bool(dict_path)
+    has_key = bool(key)
+    if has_key:
+        return "deepl"
+    if has_dict:
+        return "offline"
+    return "none"
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -38,6 +56,7 @@ class MainWindow(QWidget):
         self.exe_path: str | None = None
         self.detection: Detection | None = None
         self.server: TranslationServer | None = None
+        self.dict_path: str | None = None  # 使用者選擇的既有字典 JSON（離線模式用）
 
         self.pick_btn = QPushButton("選擇遊戲主程式…")
         self.info = QLabel("請先選擇遊戲主程式")
@@ -45,14 +64,17 @@ class MainWindow(QWidget):
         self.engine_box.addItem("DeepL")
         self.key_edit = QLineEdit()
         self.key_edit.setPlaceholderText("DeepL API Key")
+        self.dict_btn = QPushButton("選擇既有字典 JSON（離線，可不填 key）")
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
 
         lay = QVBoxLayout(self)
-        for w in (self.pick_btn, self.info, self.engine_box, self.key_edit, self.start_btn):
+        for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
+                  self.dict_btn, self.start_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
+        self.dict_btn.clicked.connect(self.on_pick_dict)
         self.start_btn.clicked.connect(self.on_start)
 
     def on_pick(self):
@@ -73,9 +95,23 @@ class MainWindow(QWidget):
         # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」
         self.start_btn.setEnabled(ok)
 
+    def on_pick_dict(self):
+        # 開檔案選擇對話框，選取既有字典 JSON（離線字典模式用）
+        path, _ = QFileDialog.getOpenFileName(
+            self, "選擇既有字典 JSON", "", "JSON (*.json)")
+        if not path:
+            return
+        self.dict_path = path
+
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
         if not can_start(self.detection):
+            return
+        # 引擎選擇決策：offline（離線字典）/ deepl（線上，可帶種子字典）/ none（都沒填）
+        key = self.key_edit.text().strip()
+        mode = choose_translator_mode(self.dict_path, key)
+        if mode == "none":
+            self.info.setText("請填 DeepL key 或選擇既有字典 JSON")
             return
         # 整合流程：讀地圖 → 起 server → 部署 adapter → 開遊戲
         # 全程 try/except 容錯：任一步驟丟例外（如填錯 DeepL key、斷網）都要顯示錯誤訊息，
@@ -89,10 +125,23 @@ class MainWindow(QWidget):
                         maps.append(json.load(f))
                 except (json.JSONDecodeError, OSError) as e:
                     print(f"[警告] 讀取地圖失敗 {mp}: {e}")
-            key = self.key_edit.text().strip()
-            cache = DictCache(os.path.join(d.game_dir, "translator_dict.json"))
-            pipe = Pipeline(cache, DeepLTranslator(key, free=True),
-                            target_lang="ZH", source_lang="JA")
+
+            cache_path = os.path.join(d.game_dir, "translator_dict.json")
+            # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
+            if self.dict_path:
+                src = os.path.abspath(self.dict_path)
+                dst = os.path.abspath(cache_path)
+                # 來源與目的相同路徑時跳過複製，避免 shutil.copyfile 自我覆蓋出錯
+                if src != dst:
+                    shutil.copyfile(src, dst)
+            cache = DictCache(cache_path)
+
+            if mode == "offline":
+                translator = NullTranslator()
+            else:
+                translator = DeepLTranslator(key, free=True)
+            pipe = Pipeline(cache, translator, target_lang="ZH", source_lang="JA")
+
             # 重複點開始不疊加多個 server：起新 server 前先關掉舊的
             if self.server:
                 self.server.stop()
@@ -102,6 +151,9 @@ class MainWindow(QWidget):
                                   "adapters", "mv", "ZZ_Translator_Bridge.js")
             deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge))
             launch_game(self.exe_path)
-            self.info.setText("已啟動遊戲，翻譯服務執行中…")
+            if mode == "offline":
+                self.info.setText("已啟動（離線字典模式），翻譯服務執行中…")
+            else:
+                self.info.setText("已啟動遊戲，翻譯服務執行中…")
         except Exception as e:
             self.info.setText(f"啟動失敗：{e}")
