@@ -597,6 +597,11 @@ class MainWindow(QWidget):
         from core.translators.protect import ControlCodeTranslator
         pipe.translator = ControlCodeTranslator(pipe.translator)
 
+        # 加密 MZ 走離線整字典嵌入，執行期不需 server；先關掉任何殘留的舊 server 避免洩漏 socket
+        if self.server:
+            self.server.stop()
+            self.server = None
+
         self.start_btn.setEnabled(False)
         self.info.setText("翻譯中（加密 MZ）：解密與預翻…")
         self.monitor.reset()
@@ -621,7 +626,7 @@ class MainWindow(QWidget):
             if self.traditional_checkbox.isChecked():
                 convert = make_traditional_converter()
                 offline_dict = {k: convert(v) for k, v in offline_dict.items()}
-            port = self.server.port if self.server else 0
+            port = 0  # 離線整字典嵌入模式不需 server，port 不會被 bridge 使用
             bridge = resource_path(os.path.join("adapters", "mv", "ZZ_Translator_Bridge.js"))
             deploy_mv_adapter(d.web_dir, port, [], bridge_src=os.path.abspath(bridge),
                               offline_dict=offline_dict)
