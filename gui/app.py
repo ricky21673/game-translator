@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import shutil
+import sys
 
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
@@ -18,7 +19,19 @@ from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
 from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 
-SUPPORTED = ("mv",)  # P1 只支援 MV
+SUPPORTED = ("mv", "mz")  # 支援 MV 與 MZ
+
+
+def resource_path(rel_path: str) -> str:
+    """
+    解析隨程式一起打包的資源路徑，開發與打包後皆適用：
+    - PyInstaller 打包後：資源解壓到 sys._MEIPASS，以它為基準。
+    - 開發模式：gui/ 的上一層即專案根目錄。
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base is None:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel_path)
 
 
 def can_start(detection: Detection | None, engine_supported=SUPPORTED) -> bool:
@@ -135,7 +148,7 @@ class MainWindow(QWidget):
         try:
             d = self.detection
             maps = []
-            for mp in sorted(glob.glob(os.path.join(d.www_dir, "data", "Map*.json"))):
+            for mp in sorted(glob.glob(os.path.join(d.web_dir, "data", "Map*.json"))):
                 try:
                     with open(mp, encoding="utf-8") as f:
                         maps.append(json.load(f))
@@ -163,12 +176,12 @@ class MainWindow(QWidget):
                 self.server.stop()
             self.server = TranslationServer(pipe, port=0)
             port = self.server.start()
-            bridge = os.path.join(os.path.dirname(__file__), "..",
-                                  "adapters", "mv", "ZZ_Translator_Bridge.js")
+            bridge = resource_path(os.path.join(
+                "adapters", "mv", "ZZ_Translator_Bridge.js"))
             # 離線模式：把整份字典嵌入遊戲端（MTool 式），供底層畫字 hook 即時查表；
             # DeepL 線上模式維持 None，走既有 server/collectStrings 路徑，不受影響。
             offline_dict = cache.as_dict() if mode == "offline" else None
-            deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge),
+            deploy_mv_adapter(d.web_dir, port, maps, bridge_src=os.path.abspath(bridge),
                               offline_dict=offline_dict)
             launch_game(self.exe_path)
             if mode == "offline":
@@ -188,7 +201,7 @@ class MainWindow(QWidget):
             if self.server:
                 self.server.stop()
                 self.server = None
-            restore_mv_adapter(self.detection.www_dir)
+            restore_mv_adapter(self.detection.web_dir)
             self.info.setText("已還原遊戲原始檔")
         except Exception as e:
             self.info.setText(f"還原失敗：{e}")

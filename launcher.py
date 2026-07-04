@@ -24,9 +24,14 @@ def _backup_if_missing(path: str) -> None:
 def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
                       bridge_src: str, offline_dict: dict | None = None) -> str:
     """
-    部署 MV adapter 到遊戲資料夾。
+    部署 MV/MZ adapter 到遊戲資料夾。
+
+    www_dir：呼叫端傳入的是 Detection.web_dir（含 index.html 與 js/ 的目錄）。
+    MV 時為 www 目錄；MZ（無 www，根目錄即含 js/）時為遊戲根目錄。
+    參數名沿用 www_dir 是為了與既有呼叫端相容，語意上代表「web 根目錄」。
+
     流程：複製 bridge → （離線模式）寫整份字典檔 → 寫 boot 檔 → 在 plugins.js 末端註冊
-         → 修改 index.html 引入 dict_data／boot。
+         → 修改 index.html 引入 dict_data／boot（注入點見下方第 4 步說明）。
     可重入：重複呼叫不會重複註冊 plugin。
 
     offline_dict：離線字典模式用，傳入整份 {原文:譯文} dict 時，會多寫一個
@@ -72,11 +77,17 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         with open(plugins_js, "w", encoding="utf-8") as f:
             f.write(text)
 
-    # 4) 確保 index.html 於載入 plugins.js 前引入 dict_data（若有）與 boot
+    # 4) 確保 index.html 於載入點前引入 dict_data（若有）與 boot
     #    兩個 <script> 各自獨立判斷、獨立注入，避免其中一個已存在時，
     #    連帶把另一個也可重入判斷（可重入：已存在的 script 不重複注入）。
     #    例如：使用者先前已部署過線上模式（boot 已存在），這次改用離線模式，
     #    此時應只補注入 dict_data，而不是因為 boot 已存在就整段跳過。
+    #
+    #    載入點：MV 的 index.html 有 js/plugins.js 的 <script>；MZ 沒有
+    #    plugins.js 的 <script>（plugins 由 main.js 內部載入），只有 js/main.js。
+    #    因此用 alternation 同時比對兩者，取「檔案中最先出現」的那個插入點：
+    #    - MV：plugins.js 一定在 main.js 之前 → 命中 plugins.js（維持原行為，不可退化）。
+    #    - MZ：只有 main.js → 命中 main.js。
     index = os.path.join(www_dir, "index.html")
     # 修改前先備份原始檔（僅第一次部署會真的複製，之後保留最初版本）
     _backup_if_missing(index)
@@ -89,13 +100,13 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         tag += '<script type="text/javascript" src="js/translator_boot.js"></script>\n'
 
     if tag:
-        # 只有在「確實需要注入」時，才要求 plugins.js 載入點必須存在；
+        # 只有在「確實需要注入」時，才要求載入點必須存在；
         # 若兩者皆已存在（tag 為空字串），即使找不到載入點也不應 raise。
-        html, n = re.subn(r'(<script[^>]*src=["\']js/plugins\.js["\'][^>]*>)',
+        html, n = re.subn(r'(<script[^>]*src=["\']js/(?:plugins|main)\.js["\'][^>]*>)',
                           tag + r"\1", html, count=1)
         if n == 0:
             raise RuntimeError(
-                "無法在 index.html 找到 js/plugins.js 的載入點，script 未能注入")
+                "無法在 index.html 找到 js/plugins.js 或 js/main.js 的載入點，script 未能注入")
         with open(index, "w", encoding="utf-8") as f:
             f.write(html)
     return dst

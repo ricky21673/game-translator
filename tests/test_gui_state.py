@@ -11,7 +11,12 @@ def test_no_selection_cannot_start():
 
 def test_mv_can_start():
     # 偵測到 MV 引擎且提供完整目錄資訊 → 可以開始
-    assert can_start(Detection("mv", "/g", "/g/www", "/g/www/js")) is True
+    assert can_start(Detection("mv", "/g", "/g/www", "/g/www/js", "/g/www")) is True
+
+
+def test_mz_can_start():
+    # 偵測到 MZ 引擎且提供完整目錄資訊（web_dir 為遊戲根目錄，無 www）→ 可以開始
+    assert can_start(Detection("mz", "/g", None, "/g/js", "/g")) is True
 
 
 def test_unknown_cannot_start():
@@ -31,7 +36,12 @@ def test_restore_no_selection_cannot_restore():
 
 def test_restore_mv_can_restore():
     # 偵測到 MV 引擎 → 還原鈕可用
-    assert can_restore(Detection("mv", "/g", "/g/www", "/g/www/js")) is True
+    assert can_restore(Detection("mv", "/g", "/g/www", "/g/www/js", "/g/www")) is True
+
+
+def test_restore_mz_can_restore():
+    # 偵測到 MZ 引擎 → 還原鈕可用
+    assert can_restore(Detection("mz", "/g", None, "/g/js", "/g")) is True
 
 
 def test_restore_unknown_cannot_restore():

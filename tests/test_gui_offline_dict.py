@@ -53,7 +53,7 @@ def test_offline_mode_passes_full_dict_to_deploy(tmp_path, monkeypatch):
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
-    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"))
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
     win.dict_path = str(dict_path)
     win.key_edit.setText("")  # 沒填 key → 離線模式
 
@@ -82,7 +82,7 @@ def test_deepl_mode_passes_none_to_deploy(tmp_path, monkeypatch):
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
-    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"))
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
     win.dict_path = None
     win.key_edit.setText("sk-dummy-key-not-real")
 

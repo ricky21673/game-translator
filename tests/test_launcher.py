@@ -235,6 +235,43 @@ def test_deploy_adds_dict_data_when_boot_already_present_but_dict_missing(tmp_pa
     assert html_after.count("translator_boot.js") == 1
 
 
+# ---------------------------------------------------------------------------
+# MZ 支援：index.html 只有 js/main.js（無 js/plugins.js）時的注入點
+# ---------------------------------------------------------------------------
+
+def _mk_mz(tmp_path):
+    # 建立一個簡易的 MZ 遊戲資料夾結構（無 www，index.html 只有 js/main.js，無 js/plugins.js）
+    game = tmp_path / "game"
+    js = game / "js"
+    js.mkdir(parents=True)
+    (js / "plugins.js").write_text("var $plugins =\n[\n];\n", encoding="utf-8")
+    (game / "index.html").write_text(
+        "<html><body>"
+        "<script type='text/javascript' src='js/main.js'></script>"
+        "</body></html>", encoding="utf-8")
+    return str(game)
+
+
+def test_deploy_mz_style_index_html_injects_before_main_js(tmp_path):
+    # MZ 式 index.html：只有 js/main.js 的 <script>，沒有 js/plugins.js 的 <script>
+    # （plugins 由 main.js 內部載入）。deploy 後應在 main.js 之前注入 translator_boot.js，
+    # 離線模式下也應注入 translator_dict_data.js，且同樣排在 main.js 之前。
+    game = _mk_mz(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(game, 54321, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"),
+                       offline_dict={"はい": "是"})
+
+    # plugins.js 仍照既有邏輯註冊（MZ 的 plugins.js 格式與 MV 相同）
+    plugins = open(os.path.join(game, "js", "plugins.js"), encoding="utf-8").read()
+    assert "ZZ_Translator_Bridge" in plugins
+
+    html = open(os.path.join(game, "index.html"), encoding="utf-8").read()
+    assert "main.js" in html
+    assert html.index("translator_dict_data.js") < html.index("main.js")
+    assert html.index("translator_boot.js") < html.index("main.js")
+
+
 def test_restore_after_offline_deploy_removes_dict_data_file(tmp_path):
     # 離線模式部署後呼叫 restore：translator_dict_data.js 檔案應被刪除
     www = _mk_mv(tmp_path)

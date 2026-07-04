@@ -12,11 +12,15 @@ class Detection:
     - game_dir: 遊戲根目錄的絕對路徑
     - www_dir: MV 遊戲的 www 目錄路徑（若存在）
     - js_dir: 遊戲核心 js 檔所在目錄（若存在）
+    - web_dir: 含 index.html 與 js/ 的目錄（MV/MZ 部署與注入流程共用的基準目錄）。
+      MV 時等於 www_dir；MZ（無 www，根目錄即含 js/）時等於 game_dir。
+      unity/tyrano/unknown 維持 None。
     """
     engine: str
     game_dir: str
     www_dir: str | None = None
     js_dir: str | None = None
+    web_dir: str | None = None
 
 
 def detect(exe_path: str) -> Detection:
@@ -39,14 +43,15 @@ def detect(exe_path: str) -> Detection:
     game_dir = os.path.dirname(os.path.abspath(exe_path))
 
     # MV/MZ 的 js 可能在 <dir>/www/js 或 <dir>/js
+    # web_dir 為含 index.html 與 js/ 的基準目錄，即 js_dir 的上一層（os.path.dirname(js_dir)）。
     for base in (os.path.join(game_dir, "www"), game_dir):
         js_dir = os.path.join(base, "js")
         if os.path.isfile(os.path.join(js_dir, "rpg_core.js")):
             www = base if os.path.basename(base) == "www" else None
-            return Detection("mv", game_dir, www, js_dir)
+            return Detection("mv", game_dir, www, js_dir, os.path.dirname(js_dir))
         if os.path.isfile(os.path.join(js_dir, "rmmz_core.js")):
             www = base if os.path.basename(base) == "www" else None
-            return Detection("mz", game_dir, www, js_dir)
+            return Detection("mz", game_dir, www, js_dir, os.path.dirname(js_dir))
 
     # Unity：UnityPlayer.dll 或任何 *_Data 目錄
     if os.path.isfile(os.path.join(game_dir, "UnityPlayer.dll")):
