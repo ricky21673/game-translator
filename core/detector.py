@@ -1,0 +1,62 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass
+class Detection:
+    """
+    遊戲引擎偵測結果。
+
+    屬性：
+    - engine: 偵測到的引擎名稱（'mv'|'mz'|'unity'|'tyrano'|'unknown'）
+    - game_dir: 遊戲根目錄的絕對路徑
+    - www_dir: MV 遊戲的 www 目錄路徑（若存在）
+    - js_dir: 遊戲核心 js 檔所在目錄（若存在）
+    """
+    engine: str
+    game_dir: str
+    www_dir: str | None = None
+    js_dir: str | None = None
+
+
+def detect(exe_path: str) -> Detection:
+    """
+    根據可執行檔路徑偵測遊戲引擎。
+
+    支援的引擎：
+    - MV: 透過檢查 rpg_core.js 檔案（在 www/js 或根 js 目錄）
+    - MZ: 透過檢查 rmmz_core.js 檔案（在 www/js 或根 js 目錄）
+    - Unity: 透過檢查 UnityPlayer.dll 或 *_Data 目錄
+    - TyranoScript: 透過檢查 data/scenario 目錄
+    - 未知: 無法識別時回傳此項
+
+    參數：
+    - exe_path: 遊戲可執行檔的絕對路徑
+
+    回傳：
+    - Detection 物件，含引擎類型及相關目錄資訊
+    """
+    game_dir = os.path.dirname(os.path.abspath(exe_path))
+
+    # MV/MZ 的 js 可能在 <dir>/www/js 或 <dir>/js
+    for base in (os.path.join(game_dir, "www"), game_dir):
+        js_dir = os.path.join(base, "js")
+        if os.path.isfile(os.path.join(js_dir, "rpg_core.js")):
+            www = base if os.path.basename(base) == "www" else None
+            return Detection("mv", game_dir, www, js_dir)
+        if os.path.isfile(os.path.join(js_dir, "rmmz_core.js")):
+            www = base if os.path.basename(base) == "www" else None
+            return Detection("mz", game_dir, www, js_dir)
+
+    # Unity：UnityPlayer.dll 或任何 *_Data 目錄
+    if os.path.isfile(os.path.join(game_dir, "UnityPlayer.dll")):
+        return Detection("unity", game_dir)
+    for name in os.listdir(game_dir):
+        if name.endswith("_Data") and os.path.isdir(os.path.join(game_dir, name)):
+            return Detection("unity", game_dir)
+
+    # TyranoScript
+    if os.path.isdir(os.path.join(game_dir, "data", "scenario")):
+        return Detection("tyrano", game_dir)
+
+    return Detection("unknown", game_dir)
