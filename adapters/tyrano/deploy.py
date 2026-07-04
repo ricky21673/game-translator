@@ -18,7 +18,8 @@ from core.pipeline import Pipeline
 from .ks import extract_segments, apply_translations
 
 
-def translate_tree(app_dir: str, pipeline: Pipeline, progress=None) -> dict:
+def translate_tree(app_dir: str, pipeline: Pipeline, progress=None,
+                   segment_progress=None) -> dict:
     """
     走訪 app_dir 下所有 .ks 檔，彙整全部可翻段、一次送 pipeline 翻譯，再逐檔寫回。
 
@@ -27,7 +28,10 @@ def translate_tree(app_dir: str, pipeline: Pipeline, progress=None) -> dict:
     - pipeline: 具 .translate(texts) -> list[str] 的翻譯管線
     - progress: 可選 callable(done_files, total_files, phase_str)，用於回報進度給 GUI。
       phase_str 為下列三階段之一："collect"（翻譯前收集）、"translate"（翻譯中）、
-      "write"（寫回中）。
+      "write"（寫回中）。這是「檔案級」進度（總檔數 / 已處理檔數）。
+    - segment_progress: 可選 callable(done, total)，句級進度，回報「未命中、實際送引擎
+      的段落」翻了幾句 / 共幾句。與 progress 的檔案數語意不同，故獨立一條回呼；
+      直接透傳給 pipeline.translate 的 progress_cb。
 
     回傳：
     - 統計 dict：{"ks_files": n, "segments": m, "translated": k}
@@ -64,7 +68,12 @@ def translate_tree(app_dir: str, pipeline: Pipeline, progress=None) -> dict:
     # 第三步：一次把去重後的段落送去翻譯，組成 mapping
     if progress:
         progress(0, total_files, "translate")
-    translated_list = pipeline.translate(all_segments) if all_segments else []
+    translated_list = (
+        pipeline.translate(all_segments, progress_cb=segment_progress)
+        if all_segments else [])
+    # 沒有任何段落時（極端空專案），仍主動回報一次句級進度歸零，避免 GUI 進度條卡住。
+    if not all_segments and segment_progress is not None:
+        segment_progress(0, 0)
     mapping = dict(zip(all_segments, translated_list))
     if progress:
         progress(total_files, total_files, "translate")
@@ -87,7 +96,8 @@ def translate_tree(app_dir: str, pipeline: Pipeline, progress=None) -> dict:
     }
 
 
-def deploy_tyrano(game_dir: str, pipeline: Pipeline, progress=None) -> dict:
+def deploy_tyrano(game_dir: str, pipeline: Pipeline, progress=None,
+                  segment_progress=None) -> dict:
     """
     部署 TyranoScript（Electron）遊戲：解包 app.asar -> 翻譯 .ks -> 改名讓 Electron 改用解包資料夾。
 
@@ -98,6 +108,7 @@ def deploy_tyrano(game_dir: str, pipeline: Pipeline, progress=None) -> dict:
     - game_dir: 遊戲根目錄（含 resources/app.asar）
     - pipeline: 具 .translate(texts) -> list[str] 的翻譯管線
     - progress: 可選 callable(done_files, total_files, phase_str)，透傳給 translate_tree
+    - segment_progress: 可選 callable(done, total)，句級進度，透傳給 translate_tree
 
     回傳：
     - translate_tree 的統計 dict
@@ -109,11 +120,11 @@ def deploy_tyrano(game_dir: str, pipeline: Pipeline, progress=None) -> dict:
 
     if os.path.isfile(bak):
         # 先前已部署過：app.asar 已改名為 .trbak，app_dir 已存在，直接補翻
-        return translate_tree(app_dir, pipeline, progress)
+        return translate_tree(app_dir, pipeline, progress, segment_progress)
 
     # 首次部署：解包 -> 翻譯 -> 改名
     extract_asar(asar, app_dir)
-    stats = translate_tree(app_dir, pipeline, progress)
+    stats = translate_tree(app_dir, pipeline, progress, segment_progress)
     os.replace(asar, bak)
     return stats
 

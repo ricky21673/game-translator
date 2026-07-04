@@ -257,3 +257,51 @@ def test_missing_not_exceeding_batch_saves_once(tmp_path):
     assert out == ["A_翻", "B_翻"]
     assert save_count[0] == 1
     assert tr.calls == [["A", "B"]]
+
+
+def test_segment_progress_reports_missing_count_per_batch(tmp_path):
+    # 句級進度 progress_cb(done, total)：total 為「未命中、要送引擎」的段落數，
+    # 每翻完一批回報一次累計 done。開頭先回報一次 (0, total)。
+    cache = DictCache(str(tmp_path / "d.json"))
+    cache.put("HIT", "已有")  # 命中不算進 total
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+
+    n = BATCH * 2 + 7  # 跨三批
+    texts = ["HIT"] + [f"S{i}" for i in range(n)]
+
+    events = []
+    p.translate(texts, progress_cb=lambda done, total: events.append((done, total)))
+
+    # total 一律是未命中數 n（命中的 HIT 不算）
+    assert all(total == n for _done, total in events)
+    # 第一筆是開場 (0, n)
+    assert events[0] == (0, n)
+    # 最後一筆是完成 (n, n)
+    assert events[-1] == (n, n)
+    # done 單調遞增，且每批 +BATCH（最後一批為餘數）
+    dones = [d for d, _t in events]
+    assert dones == sorted(dones)
+    assert dones == [0, BATCH, BATCH * 2, n]
+
+
+def test_segment_progress_all_cached_reports_zero_total(tmp_path):
+    # 全部命中快取時 total=0，只回報一次 (0, 0)，讓 GUI 能顯示「無需翻譯」
+    cache = DictCache(str(tmp_path / "d.json"))
+    cache.put("A", "A譯")
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+
+    events = []
+    p.translate(["A"], progress_cb=lambda done, total: events.append((done, total)))
+    assert events == [(0, 0)]
+    assert tr.calls == []
+
+
+def test_translate_without_progress_cb_unchanged(tmp_path):
+    # 不傳 progress_cb 時行為與現況完全一致
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+    out = p.translate(["A", "B"])
+    assert out == ["A_翻", "B_翻"]

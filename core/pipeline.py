@@ -46,7 +46,14 @@ class Pipeline:
             return self.global_cache.get(t)
         return None
 
-    def translate(self, texts: list[str]) -> list[str]:
+    def translate(self, texts: list[str], progress_cb=None) -> list[str]:
+        # progress_cb（可選）：句級進度回呼 callable(done, total)，回報「未命中、
+        # 實際要送引擎翻的段落」翻了幾句 / 共幾句。與 GUI 檔案級/階段級的 phase
+        # progress 語意不同（那是檔案數），故獨立成一條回呼，交由呼叫端接到獨立的
+        # segment_progress signal。全部命中快取時 total=0，只回報一次 (0, 0)，
+        # 讓 GUI 能立刻把進度條歸零/顯示「無需翻譯」。預設 None 時完全不回報，
+        # 行為與加這個功能之前一致。
+        #
         # 收集未命中且去重（保留首次出現順序）。用 _lookup 判斷，
         # 讓「全域字典已有但遊戲私有字典沒有」的句子直接算命中，不必再送引擎。
         missing: list[str] = []
@@ -56,11 +63,17 @@ class Pipeline:
                 seen.add(t)
                 missing.append(t)
 
+        total_missing = len(missing)
+        if progress_cb is not None:
+            # 一開始先回報一次總數（done=0），讓 GUI 知道要翻幾句、能算速度/ETA。
+            progress_cb(0, total_missing)
+
         # 若有未命中的文字，切成小批逐批送引擎翻譯、寫回快取並保存。
         # 邊翻邊存：每一批翻完就立刻 save 一次，中途崩潰最多只丟最後一批，
         # 已存進 JSON 的部分下次載入即會命中快取、可從中斷處續跑。
         # 同時寫回全域共用字典（若有設定），讓這批新翻譯之後在其他遊戲也能直接命中。
         if missing:
+            done = 0
             for i in range(0, len(missing), BATCH):
                 batch = missing[i:i + BATCH]
                 translated = self.translator.translate(
@@ -78,6 +91,10 @@ class Pipeline:
                 self.cache.save()
                 if self.global_cache is not None:
                     self.global_cache.save()
+                # 每翻完一批就回報一次句級進度（done 為累計已翻句數）。
+                done += len(batch)
+                if progress_cb is not None:
+                    progress_cb(done, total_missing)
 
         # 回傳與輸入等長且順序一致的譯文（分層查詢：私有字典優先，其次全域字典）
         results = [self._lookup(t) for t in texts]

@@ -221,6 +221,49 @@ def test_tyrano_pipeline_no_postprocess_when_traditional_unchecked(tmp_path, mon
     assert captured["postprocess"] is None
 
 
+def test_tyrano_segment_progress_reaches_monitor(tmp_path, monkeypatch):
+    # 句級進度接線：Tyrano 流程跑完後，monitor 應收過至少一次 set_progress，
+    # 且最後一次的 done == total（翻譯全部完成）。用 SpyTranslator 讓段落算未命中、
+    # 會實際「送引擎」翻，才會有非零 total。
+    game_dir = _mk_tyrano_game(tmp_path)
+
+    class SpyTranslator(app_module.NullTranslator):
+        def translate(self, texts, target_lang, source_lang=None):
+            return [t + "訳" for t in texts]
+
+    monkeypatch.setattr(app_module, "LocalTranslator",
+                        lambda model: SpyTranslator())
+    monkeypatch.setattr(app_module, "launch_game", lambda exe_path: None)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("tyrano", game_dir=str(game_dir))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.engine_box.setCurrentText("本地 Ollama")
+
+    # 攔截 monitor.set_progress 記錄所有進度事件（set_progress 在主執行緒被呼叫）
+    events = []
+    orig_set = win.monitor.set_progress
+    def spy_set(done, total):
+        events.append((done, total))
+        return orig_set(done, total)
+    win.monitor.set_progress = spy_set
+    # 重新接線讓 spy 生效（reset 在 on_start 內做，connect 也在 on_start 內做，
+    # 而 connect 綁的是 self.monitor.set_progress 這個 bound method 的當下參照，
+    # 故必須在 on_start 之前替換）。
+    win.on_start()
+    _run_event_loop_until(lambda: win._tyrano_thread is None)
+
+    assert len(events) >= 1
+    # 這個最小遊戲只有一句日文段，未命中送引擎翻，total 應 >= 1
+    last_done, last_total = events[-1]
+    assert last_total >= 1
+    assert last_done == last_total
+
+
 def test_tyrano_on_restore_calls_restore_tyrano(tmp_path, monkeypatch):
     # tyrano 的還原應呼叫 restore_tyrano(game_dir)，而不是 restore_mv_adapter
     game_dir = _mk_tyrano_game(tmp_path)

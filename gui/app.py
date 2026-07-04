@@ -27,6 +27,7 @@ from core.server import TranslationServer
 from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
 from core.translators.local import LocalTranslator
+from gui.monitor import TranslationMonitor
 from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 from adapters.tyrano.deploy import deploy_tyrano, restore_tyrano
 
@@ -109,6 +110,7 @@ class TyranoDeployWorker(QObject):
     - error(message)：deploy_tyrano 拋出例外時的錯誤訊息（字串化後的例外內容）
     """
     progress = Signal(int, int, str)
+    segment_progress = Signal(int, int)
     finished = Signal(dict)
     error = Signal(str)
 
@@ -121,7 +123,8 @@ class TyranoDeployWorker(QObject):
         try:
             stats = deploy_tyrano(
                 self.game_dir, self.pipeline,
-                progress=lambda done, total, phase: self.progress.emit(done, total, phase))
+                progress=lambda done, total, phase: self.progress.emit(done, total, phase),
+                segment_progress=lambda done, total: self.segment_progress.emit(done, total))
         except Exception as e:
             self.error.emit(str(e))
             return
@@ -173,12 +176,15 @@ class MainWindow(QWidget):
         self.start_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
         self.restore_btn.setEnabled(False)
+        # 翻譯監控面板：句級進度 + 速度 + ETA + GPU（每秒刷新）。放在版面最下方；
+        # GPU timer 一建立就開始跑，會即時反映本機 GPU 狀態（沒 NVIDIA GPU 時顯示不可用）。
+        self.monitor = TranslationMonitor()
 
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
                   self.model_edit, self.dict_btn, self.traditional_checkbox,
                   self.global_dict_checkbox, self.store_converted_checkbox,
-                  self.start_btn, self.restore_btn):
+                  self.start_btn, self.restore_btn, self.monitor):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
@@ -338,6 +344,8 @@ class MainWindow(QWidget):
 
         self.start_btn.setEnabled(False)
         self.info.setText("翻譯中（Tyrano）：準備中…")
+        # 每次啟動一輪翻譯前重置監控面板的句級進度/速度/ETA（GPU timer 不受影響、持續刷新）
+        self.monitor.reset()
 
         thread = QThread()
         worker = TyranoDeployWorker(d.game_dir, pipe)
@@ -345,6 +353,9 @@ class MainWindow(QWidget):
 
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_tyrano_progress)
+        # 句級進度用 queued 連線（背景 worker → 主執行緒）餵進監控面板；
+        # set_progress 只在主執行緒被呼叫，不需加鎖。
+        worker.segment_progress.connect(self.monitor.set_progress)
         worker.finished.connect(self._on_tyrano_finished)
         worker.error.connect(self._on_tyrano_error)
         # 收尾：worker 跑完（成功或失敗）就請 thread 結束事件迴圈並釋放。

@@ -46,8 +46,13 @@ class StubPipeline:
         self.mapping = mapping
         self.calls: list[list[str]] = []
 
-    def translate(self, texts: list[str]) -> list[str]:
+    def translate(self, texts: list[str], progress_cb=None) -> list[str]:
+        # 需與真正的 Pipeline.translate 同介面（含句級進度回呼 progress_cb），
+        # 這樣 translate_tree 透傳 segment_progress 時不會爆 TypeError。
         self.calls.append(list(texts))
+        if progress_cb is not None:
+            progress_cb(0, len(texts))
+            progress_cb(len(texts), len(texts))
         return [self.mapping.get(t, t) for t in texts]
 
 
