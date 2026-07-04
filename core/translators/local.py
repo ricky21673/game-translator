@@ -7,6 +7,7 @@ from .deepl import TranslationError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11434
 TIMEOUT = 120  # 本地 LLM 可能較慢，timeout 拉長
+MAX_RETRIES = 2  # 單句失敗後最多重試次數（不含第一次嘗試）
 
 SYSTEM_PROMPT = (
     "你是專業的日文遊戲翻譯，把使用者輸入翻成簡體中文；"
@@ -31,10 +32,29 @@ class LocalTranslator(Translator):
     def translate(self, texts: list[str], target_lang: str = "ZH",
                   source_lang: str | None = None) -> list[str]:
         # 逐句呼叫 /api/chat，最可靠；批次優化留待日後
+        #
+        # 容錯設計：長時間全翻（上萬句、跑好幾小時）任一句因逾時/忙碌/斷線
+        # 失敗都不該讓整批中斷。因此每句都有獨立的重試與降級機制：
+        # 先重試最多 MAX_RETRIES 次，仍失敗就保留原文、印出警告後繼續下一句，
+        # 絕不向外拋出例外（fail-soft，不 fail-fast）。
         out: list[str] = []
         for text in texts:
-            out.append(self._call(text))
+            out.append(self._call_with_retry(text))
         return out
+
+    def _call_with_retry(self, text: str) -> str:
+        # 對單一句子做重試：第一次嘗試 + 最多 MAX_RETRIES 次重試
+        last_err: Exception | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                return self._call(text)
+            except TranslationError as e:
+                last_err = e
+
+        # 重試用盡仍失敗：保留原文，繼續下一句，不中斷整批
+        preview = text[:20]
+        print(f"[警告] 翻譯失敗，已保留原文繼續下一句：{preview}（原因：{last_err}）")
+        return text
 
     def _call(self, text: str) -> str:
         body = {

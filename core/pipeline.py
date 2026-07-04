@@ -1,6 +1,12 @@
 from .cache import DictCache
 from .translators.base import Translator
 
+# 分批大小：長時間全翻（上萬句、跑好幾小時）若「全部翻完才存一次」，
+# 中途當機/斷線會讓前面全部白做。改成每 BATCH 句就寫回快取並存檔一次，
+# 中途出錯最多只丟最後一批未存進去的進度，重跑時已存的部分會直接命中快取續翻。
+# 之後如需調整分批大小，改這個常數即可。
+BATCH = 50
+
 
 class Pipeline:
     def __init__(self, cache: DictCache, translator: Translator,
@@ -24,13 +30,17 @@ class Pipeline:
                 seen.add(t)
                 missing.append(t)
 
-        # 若有未命中的文字，送引擎翻譯、寫回快取並保存
+        # 若有未命中的文字，切成小批逐批送引擎翻譯、寫回快取並保存。
+        # 邊翻邊存：每一批翻完就立刻 save 一次，中途崩潰最多只丟最後一批，
+        # 已存進 JSON 的部分下次載入即會命中快取、可從中斷處續跑。
         if missing:
-            translated = self.translator.translate(
-                missing, self.target_lang, self.source_lang)
-            for src, dst in zip(missing, translated):
-                self.cache.put(src, dst)
-            self.cache.save()
+            for i in range(0, len(missing), BATCH):
+                batch = missing[i:i + BATCH]
+                translated = self.translator.translate(
+                    batch, self.target_lang, self.source_lang)
+                for src, dst in zip(batch, translated):
+                    self.cache.put(src, dst)
+                self.cache.save()
 
         # 回傳與輸入等長且順序一致的譯文（全部從快取取得）
         results = [self.cache.get(t) for t in texts]

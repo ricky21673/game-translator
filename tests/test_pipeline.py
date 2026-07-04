@@ -1,5 +1,5 @@
 from core.cache import DictCache
-from core.pipeline import Pipeline
+from core.pipeline import Pipeline, BATCH
 
 
 class SpyTranslator:
@@ -81,3 +81,65 @@ def test_postprocess_none_keeps_existing_behavior(tmp_path):
     p = Pipeline(cache, tr, target_lang="ZH")
     out = p.translate(["A", "B"])
     assert out == ["A_翻", "B_翻"]
+
+
+def test_large_missing_set_is_translated_and_saved_in_batches(tmp_path):
+    # 核心情境：長時間全翻（上萬句）時不能「全部翻完才存一次」，
+    # 否則中途崩潰前面全白做。送出超過 BATCH 筆未命中文字，
+    # 驗證：翻譯引擎被分批呼叫（每批最多 BATCH 筆）、cache.save 被呼叫多次
+    # （分批存，而非全部翻完才存一次）、結果仍正確且順序一致。
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+
+    # 追蹤 save 被呼叫的次數
+    save_count = [0]
+    original_save = cache.save
+    def counting_save():
+        save_count[0] += 1
+        return original_save()
+    cache.save = counting_save
+
+    n = BATCH * 2 + 7  # 刻意跨 3 個批次（非整除 BATCH）
+    texts = [f"S{i}" for i in range(n)]
+
+    out = p.translate(texts)
+
+    # 結果正確、順序一致、長度與輸入相同
+    assert out == [f"S{i}_翻" for i in range(n)]
+    assert len(out) == n
+
+    # 引擎應被分批呼叫，每批筆數不超過 BATCH
+    assert len(tr.calls) == 3  # ceil(107 / 50) = 3
+    for batch_call in tr.calls:
+        assert len(batch_call) <= BATCH
+    # 攤平後應等於完整未命中清單，順序不變
+    flattened = [t for batch_call in tr.calls for t in batch_call]
+    assert flattened == texts
+
+    # save 應被呼叫多次（分批存），次數與批次數一致
+    assert save_count[0] == 3
+
+    # 中途存檔的效果：直接檢查快取檔案已包含每一批的內容（邊翻邊存）
+    reloaded = DictCache(str(tmp_path / "d.json"))
+    for t in texts:
+        assert reloaded.get(t) == t + "_翻"
+
+
+def test_missing_not_exceeding_batch_saves_once(tmp_path):
+    # 未命中筆數未超過 BATCH 時，維持原本「翻完存一次」的行為（只是分批邏輯的邊界情況）
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+
+    save_count = [0]
+    original_save = cache.save
+    def counting_save():
+        save_count[0] += 1
+        return original_save()
+    cache.save = counting_save
+
+    out = p.translate(["A", "B"])
+    assert out == ["A_翻", "B_翻"]
+    assert save_count[0] == 1
+    assert tr.calls == [["A", "B"]]
