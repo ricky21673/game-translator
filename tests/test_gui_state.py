@@ -1,7 +1,7 @@
-# 測試 GUI 狀態機（can_start、choose_translator_mode）：
+# 測試 GUI 狀態機（can_start、choose_translator_mode、visible_fields）：
 # 不建立 QWidget，headless 環境下可跑。
 from core.detector import Detection
-from gui.app import can_start, can_restore, choose_translator_mode
+from gui.app import can_start, can_restore, choose_translator_mode, visible_fields
 
 
 def test_no_selection_cannot_start():
@@ -64,25 +64,32 @@ def test_restore_tyrano_can_restore():
     assert can_restore(Detection("tyrano", game_dir="/g")) is True
 
 
-def test_only_dict_json_chooses_offline():
-    # 只選了字典 JSON、沒填 key、引擎非 local → 離線字典模式
-    assert choose_translator_mode("deepl", "/g/dict.json", "") == "offline"
+# 新版 choose_translator_mode：engine 直接由「翻譯引擎」下拉決定
+# （offline/deepl/local 三選一，不再有「deepl 但沒填 key 就當 offline」的隱含猜測），
+# 本函式只檢查「該引擎的必要欄位是否已填」。
 
 
-def test_only_key_chooses_deepl():
-    # 只填了 key、沒選字典 JSON、引擎非 local → DeepL 模式
+def test_offline_engine_with_dict_chooses_offline():
+    # engine=offline 且有選字典 JSON → 離線字典模式
+    assert choose_translator_mode("offline", "/g/dict.json", "") == "offline"
+
+
+def test_offline_engine_without_dict_chooses_none():
+    # engine=offline 但沒選字典 JSON（必選）→ 不可啟動
+    assert choose_translator_mode("offline", None, "") == "none"
+    assert choose_translator_mode("offline", "", "") == "none"
+
+
+def test_deepl_engine_with_key_chooses_deepl():
+    # engine=deepl 且有填 key → DeepL 模式（不論是否也選了字典 JSON 當種子）
     assert choose_translator_mode("deepl", None, "sk-xxx") == "deepl"
-
-
-def test_both_dict_and_key_chooses_deepl_with_seed():
-    # 兩者都有、引擎非 local → 仍走 DeepL（字典 JSON 當作種子快取，由呼叫端負責複製）
     assert choose_translator_mode("deepl", "/g/dict.json", "sk-xxx") == "deepl"
 
 
-def test_neither_chooses_none():
-    # 都沒有、引擎非 local → 不可啟動
+def test_deepl_engine_without_key_chooses_none():
+    # engine=deepl 但沒填 key（必填）→ 不可啟動，即使有選字典 JSON 也一樣
     assert choose_translator_mode("deepl", None, "") == "none"
-    assert choose_translator_mode("deepl", "", "") == "none"
+    assert choose_translator_mode("deepl", "/g/dict.json", "") == "none"
 
 
 def test_local_engine_chooses_local_even_without_key_or_dict():
@@ -93,3 +100,28 @@ def test_local_engine_chooses_local_even_without_key_or_dict():
 def test_local_engine_overrides_dict_and_key():
     # 引擎選擇本地 Ollama → 即使有帶 key/dict 也優先走 local
     assert choose_translator_mode("local", "/g/dict.json", "sk-xxx") == "local"
+
+
+def test_unknown_engine_chooses_none():
+    # 未知 engine 值 → 保守回 none，不可啟動
+    assert choose_translator_mode("unknown", "/g/dict.json", "sk-xxx") == "none"
+
+
+# 測試 visible_fields：純函式，依引擎回傳該顯示的欄位鍵集合，GUI 依此 setVisible。
+
+
+def test_visible_fields_offline_shows_only_dict():
+    assert visible_fields("offline") == {"dict"}
+
+
+def test_visible_fields_deepl_shows_dict_and_key():
+    assert visible_fields("deepl") == {"dict", "key"}
+
+
+def test_visible_fields_local_shows_dict_and_model():
+    assert visible_fields("local") == {"dict", "model"}
+
+
+def test_visible_fields_unknown_shows_nothing():
+    # 未知引擎值保守起見全部隱藏，避免顯示不相關欄位
+    assert visible_fields("unknown") == set()

@@ -1,4 +1,4 @@
-# 最小 PySide6 GUI：選遊戲 exe → 自動判型 → 顯示 → 依「是否支援」鎖/解鎖「開始」
+# PySide6 GUI：選遊戲 exe → 自動判型 → 顯示 → 依「是否支援」鎖/解鎖「開始」
 # → 按開始執行整合流程：
 #   - RPG Maker（mv/mz）：讀地圖 → 起 server → 部署 adapter → 開遊戲，翻譯在遊戲執行時
 #     由 server 即時處理。
@@ -6,6 +6,12 @@
 #     改名讓 Electron 吃解包後的 app/），較耗時但翻完直接啟動，執行時不需要 server。
 #     因為耗時，部署階段在背景執行緒跑，避免卡住 GUI 事件迴圈；進度透過 Qt signal
 #     回主執行緒更新畫面。
+#
+# 版面採「分區＋依引擎條件顯示」設計（見各區塊註解）：
+#   ① 遊戲：選擇主程式 + 偵測狀態
+#   ② 翻譯引擎：下拉選擇離線字典／DeepL／本地 Ollama，只顯示該引擎需要的欄位
+#   ③ 選項：繁體中文／全域字典／存繁體／翻完後自動啟動
+#   之後接「開始」「還原遊戲」兩顆按鈕，最下方沿用既有翻譯監控面板。
 import glob
 import json
 import os
@@ -15,11 +21,12 @@ import sys
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
-    QVBoxLayout, QFileDialog, QCheckBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QCheckBox, QGroupBox,
 )
 
 from core.detector import detect, Detection
 from core.cache import DictCache
+from core.ollama_util import list_ollama_models
 from core.paths import global_dict_path
 from core.pipeline import Pipeline
 from core.postprocess import make_traditional_converter
@@ -34,11 +41,14 @@ from adapters.tyrano.deploy import deploy_tyrano, restore_tyrano
 SUPPORTED = ("mv", "mz", "tyrano")  # 支援 MV、MZ 與 TyranoScript
 DEFAULT_LOCAL_MODEL = "qwen2.5:14b"
 
-# GUI 顯示字串 → choose_translator_mode 用的 engine 值
+# GUI 顯示字串 → 內部引擎值（同時也是 choose_translator_mode 用的 engine 值）。
+# 用 dict 保序（Python 3.7+ 保證插入順序），engine_box 依此順序加入選項。
 ENGINE_DISPLAY_TO_KEY = {
+    "離線字典": "offline",
     "DeepL": "deepl",
     "本地 Ollama": "local",
 }
+ENGINE_KEY_TO_DISPLAY = {v: k for k, v in ENGINE_DISPLAY_TO_KEY.items()}
 
 
 def resource_path(rel_path: str) -> str:
@@ -77,23 +87,49 @@ def can_restore(detection: Detection | None, engine_supported=SUPPORTED) -> bool
     return can_start(detection, engine_supported)
 
 
+def visible_fields(engine: str) -> set[str]:
+    """
+    純函式：依「翻譯引擎」下拉選擇，回傳這個引擎該顯示哪些欄位（GUI 依此 setVisible）。
+
+    欄位鍵：
+    - "dict"：選擇字典 JSON 按鈕（offline 必選；deepl/local 皆為可選種子/打底）
+    - "key"：DeepL API Key 輸入框（僅 deepl 需要）
+    - "model"：本地 Ollama 模型下拉 + 重新整理鈕（僅 local 需要）
+
+    對應規則：
+    - offline（離線字典）→ {"dict"}：只需字典 JSON，不需要 key 或 model。
+    - deepl               → {"dict", "key"}：需要 key；字典 JSON 為可選種子快取。
+    - local（本地 Ollama）→ {"dict", "model"}：需要模型；字典 JSON 為可選打底
+      （不選則從 0 開始翻，選了就當種子快取）。
+    - 其餘未知字串 → 空集合（保守起見全部隱藏，避免顯示不相關欄位）。
+    """
+    if engine == "offline":
+        return {"dict"}
+    if engine == "deepl":
+        return {"dict", "key"}
+    if engine == "local":
+        return {"dict", "model"}
+    return set()
+
+
 def choose_translator_mode(engine: str, dict_path: str | None, key: str) -> str:
     """
-    翻譯引擎模式的核心決策（純函式，不碰檔案/網路，方便單測）：
-    - engine == "local" → "local"（本地 Ollama，不需 key 也不需字典即可啟動，優先於其他判斷）
-    - 其餘（engine 非 local）：
-      - 有選字典 JSON 且沒填 key → "offline"（離線字典模式，NullTranslator）
-      - 有填 key（不論是否也選了字典 JSON）→ "deepl"（DeepL，若同時選了字典 JSON 則帶種子快取）
-      - 兩者都沒有 → "none"（不可啟動）
+    翻譯引擎模式的核心決策（純函式，不碰檔案/網路，方便單測）。
+
+    engine 現在直接由「翻譯引擎」下拉決定（offline/deepl/local 三選一，
+    不再有「deepl 但沒填 key 就當 offline」的隱含猜測），本函式只負責檢查
+    「該引擎的必要欄位是否已填」：
+    - engine == "offline" → 需要 dict_path，有填 → "offline"，沒填 → "none"
+    - engine == "deepl"   → 需要 key，有填 → "deepl"，沒填 → "none"
+    - engine == "local"   → 不需 key 也不需字典即可啟動 → 一律 "local"
+    - 其餘未知 engine → "none"
     """
+    if engine == "offline":
+        return "offline" if dict_path else "none"
+    if engine == "deepl":
+        return "deepl" if key else "none"
     if engine == "local":
         return "local"
-    has_dict = bool(dict_path)
-    has_key = bool(key)
-    if has_key:
-        return "deepl"
-    if has_dict:
-        return "offline"
     return "none"
 
 
@@ -134,25 +170,56 @@ class TyranoDeployWorker(QObject):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Game Translator (P1)")
+        self.setWindowTitle("Game Translator")
         self.exe_path: str | None = None
         self.detection: Detection | None = None
         self.server: TranslationServer | None = None
-        self.dict_path: str | None = None  # 使用者選擇的既有字典 JSON（離線模式用）
+        self.dict_path: str | None = None  # 使用者選擇的既有字典 JSON（離線/種子用）
         self._tyrano_thread: QThread | None = None  # Tyrano 部署背景執行緒（進行中才有值）
         self._tyrano_worker: TyranoDeployWorker | None = None
 
+        lay = QVBoxLayout(self)
+
+        # ① 遊戲區：選擇主程式 + 偵測狀態
+        game_box = QGroupBox("① 遊戲")
+        game_lay = QVBoxLayout(game_box)
         self.pick_btn = QPushButton("選擇遊戲主程式…")
         self.info = QLabel("請先選擇遊戲主程式")
+        game_lay.addWidget(self.pick_btn)
+        game_lay.addWidget(self.info)
+        lay.addWidget(game_box)
+
+        # ② 翻譯引擎區：下拉決定 mode，切換時只顯示相關欄位（見 visible_fields）
+        engine_box_group = QGroupBox("② 翻譯引擎")
+        engine_lay = QVBoxLayout(engine_box_group)
         self.engine_box = QComboBox()
-        self.engine_box.addItem("DeepL")
-        self.engine_box.addItem("本地 Ollama")
+        for display in ENGINE_DISPLAY_TO_KEY:
+            self.engine_box.addItem(display)
+        engine_lay.addWidget(self.engine_box)
+
+        self.dict_btn = QPushButton("選擇字典 JSON…")
+        engine_lay.addWidget(self.dict_btn)
+
         self.key_edit = QLineEdit()
         self.key_edit.setPlaceholderText("DeepL API Key")
-        self.model_edit = QLineEdit()
-        self.model_edit.setText(DEFAULT_LOCAL_MODEL)
-        self.model_edit.setPlaceholderText("本地 Ollama 模型名稱")
-        self.dict_btn = QPushButton("選擇既有字典 JSON（離線，可不填 key）")
+        engine_lay.addWidget(self.key_edit)
+
+        model_row = QHBoxLayout()
+        self.model_box = QComboBox()
+        self.model_box.setEditable(True)  # 抓不到 Ollama 清單時仍可手動輸入模型名
+        self.model_box.addItem(DEFAULT_LOCAL_MODEL)
+        self.model_refresh_btn = QPushButton("重新整理")
+        model_row.addWidget(self.model_box)
+        model_row.addWidget(self.model_refresh_btn)
+        engine_lay.addLayout(model_row)
+        # model_row 內的兩個 widget 一起隨「model」欄位群組顯示/隱藏
+        self._model_row_widgets = (self.model_box, self.model_refresh_btn)
+
+        lay.addWidget(engine_box_group)
+
+        # ③ 選項區：繁體中文／全域字典／存繁體／翻完後自動啟動
+        options_box = QGroupBox("③ 選項")
+        options_lay = QVBoxLayout(options_box)
         # 「繁體中文（台灣用語）」勾選框：預設勾選（使用者要繁體）。翻譯來源
         # （現成字典、DeepL、本地 Ollama）多半輸出簡體，勾選後統一用 OpenCC
         # s2twp 過一次簡轉繁（含台灣慣用語）。
@@ -172,25 +239,88 @@ class MainWindow(QWidget):
         self.store_converted_checkbox = QCheckBox(
             "翻譯 JSON 存繁體（預設存簡體較通用）")
         self.store_converted_checkbox.setChecked(False)
+        # 「翻完後自動啟動遊戲」勾選框：預設勾選。
+        # - RPG Maker（mv/mz）：勾選→部署完立刻 launch_game；不勾→只部署 adapter，
+        #   不啟動遊戲（適合想先手動檢查部署結果，或想用自己的啟動方式的使用者）。
+        # - Tyrano：勾選→背景批次翻完後 launch_game；不勾→翻完不啟動
+        #   （批次預翻本來就要等全部翻完才能玩，這裡讓使用者選擇翻完後要不要立刻玩）。
+        self.auto_launch_checkbox = QCheckBox("翻完後自動啟動遊戲")
+        self.auto_launch_checkbox.setChecked(True)
+        for w in (self.traditional_checkbox, self.global_dict_checkbox,
+                  self.store_converted_checkbox, self.auto_launch_checkbox):
+            options_lay.addWidget(w)
+        lay.addWidget(options_box)
+
+        # 開始／還原按鈕
+        btn_row = QHBoxLayout()
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
         self.restore_btn.setEnabled(False)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.restore_btn)
+        lay.addLayout(btn_row)
+
         # 翻譯監控面板：句級進度 + 速度 + ETA + GPU（每秒刷新）。放在版面最下方；
         # GPU timer 一建立就開始跑，會即時反映本機 GPU 狀態（沒 NVIDIA GPU 時顯示不可用）。
         self.monitor = TranslationMonitor()
-
-        lay = QVBoxLayout(self)
-        for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
-                  self.model_edit, self.dict_btn, self.traditional_checkbox,
-                  self.global_dict_checkbox, self.store_converted_checkbox,
-                  self.start_btn, self.restore_btn, self.monitor):
-            lay.addWidget(w)
+        lay.addWidget(self.monitor)
 
         self.pick_btn.clicked.connect(self.on_pick)
         self.dict_btn.clicked.connect(self.on_pick_dict)
+        self.model_refresh_btn.clicked.connect(self.on_refresh_models)
+        self.engine_box.currentTextChanged.connect(self.on_engine_changed)
         self.start_btn.clicked.connect(self.on_start)
         self.restore_btn.clicked.connect(self.on_restore)
+
+        # 依預設引擎套一次條件顯示（建構時就要正確，不必等使用者切換一次）
+        self.on_engine_changed(self.engine_box.currentText())
+
+    def _current_engine(self) -> str:
+        return ENGINE_DISPLAY_TO_KEY.get(self.engine_box.currentText(), "offline")
+
+    def on_engine_changed(self, _display_text: str) -> None:
+        # 切換翻譯引擎下拉時，只顯示該引擎相關欄位（visible_fields 純函式決定集合）
+        fields = visible_fields(self._current_engine())
+        self.dict_btn.setVisible("dict" in fields)
+        self.key_edit.setVisible("key" in fields)
+        show_model = "model" in fields
+        for w in self._model_row_widgets:
+            w.setVisible(show_model)
+        # 選到「本地 Ollama」時，順手嘗試自動抓一次已安裝模型清單，省得使用者
+        # 每次都要手動按「重新整理」。抓不到（服務未啟動等）list_ollama_models
+        # 會回空清單，維持目前下拉內容不變（含使用者已手動輸入的模型名）。
+        if self._current_engine() == "local":
+            self._refresh_models_silently()
+
+    def _refresh_models_silently(self) -> None:
+        # 靜默版：抓不到就什麼都不做（維持既有下拉內容），不更新狀態列文字。
+        # 供 on_engine_changed 在切換到 local 時自動呼叫。
+        names = list_ollama_models()
+        self._populate_model_box(names)
+
+    def _populate_model_box(self, names: list[str]) -> None:
+        # 把抓到的模型名稱填入 model_box，同時保留目前使用者已輸入/選取的文字
+        # （QComboBox.setEditable(True) 下 clear() 會清空當下文字，故先記住再還原）。
+        if not names:
+            return
+        current = self.model_box.currentText()
+        self.model_box.clear()
+        self.model_box.addItems(names)
+        if current and current not in names:
+            self.model_box.addItem(current)
+        idx = self.model_box.findText(current)
+        if idx >= 0:
+            self.model_box.setCurrentIndex(idx)
+
+    def on_refresh_models(self) -> None:
+        # 使用者按下「重新整理」：主動查詢一次，並在狀態列回報結果（含抓不到的情況）
+        names = list_ollama_models()
+        if not names:
+            self.info.setText("未偵測到本機 Ollama 模型（請確認 Ollama 服務已啟動），可手動輸入模型名稱")
+            return
+        self._populate_model_box(names)
+        self.info.setText(f"已偵測到 {len(names)} 個本機 Ollama 模型")
 
     def on_pick(self):
         # 開檔案選擇對話框，選取遊戲主程式（.exe）
@@ -212,9 +342,9 @@ class MainWindow(QWidget):
         self.restore_btn.setEnabled(can_restore(self.detection))
 
     def on_pick_dict(self):
-        # 開檔案選擇對話框，選取既有字典 JSON（離線字典模式用）
+        # 開檔案選擇對話框，選取既有字典 JSON（離線必選；deepl/local 可選種子/打底）
         path, _ = QFileDialog.getOpenFileName(
-            self, "選擇既有字典 JSON", "", "JSON (*.json)")
+            self, "選擇字典 JSON", "", "JSON (*.json)")
         if not path:
             return
         self.dict_path = path
@@ -237,7 +367,8 @@ class MainWindow(QWidget):
           這裡直接傳勾選框的值即可，不需額外判斷。
         """
         cache_path = os.path.join(d.game_dir, "translator_dict.json")
-        # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
+        # offline（必選）或「deepl/local 但有帶種子字典」都要把使用者選的 JSON
+        # 複製成工作快取
         if self.dict_path:
             src = os.path.abspath(self.dict_path)
             dst = os.path.abspath(cache_path)
@@ -253,7 +384,7 @@ class MainWindow(QWidget):
         if mode == "offline":
             translator = NullTranslator()
         elif mode == "local":
-            model = self.model_edit.text().strip() or DEFAULT_LOCAL_MODEL
+            model = self.model_box.currentText().strip() or DEFAULT_LOCAL_MODEL
             translator = LocalTranslator(model=model)
         else:
             translator = DeepLTranslator(key, free=True)
@@ -269,13 +400,16 @@ class MainWindow(QWidget):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
         if not can_start(self.detection):
             return
-        # 引擎選擇決策：local（本地 Ollama，線上路徑）/ offline（離線字典）/
-        # deepl（線上，可帶種子字典）/ none（都沒填）
+        # 引擎選擇決策：offline（離線字典）/ deepl（線上，可帶種子字典）/
+        # local（本地 Ollama，線上路徑），直接由引擎下拉決定，不再靠「有沒有填 key」猜測
         key = self.key_edit.text().strip()
-        engine = ENGINE_DISPLAY_TO_KEY.get(self.engine_box.currentText(), "deepl")
+        engine = self._current_engine()
         mode = choose_translator_mode(engine, self.dict_path, key)
         if mode == "none":
-            self.info.setText("請填 DeepL key 或選擇既有字典 JSON")
+            if engine == "offline":
+                self.info.setText("請選擇字典 JSON（離線字典模式必選）")
+            else:
+                self.info.setText("請填 DeepL API Key")
             return
 
         if self.detection.engine == "tyrano":
@@ -284,7 +418,7 @@ class MainWindow(QWidget):
         self._on_start_rpgmaker(mode, key)
 
     def _on_start_rpgmaker(self, mode: str, key: str) -> None:
-        # RPG Maker（mv/mz）整合流程：讀地圖 → 起 server → 部署 adapter → 開遊戲
+        # RPG Maker（mv/mz）整合流程：讀地圖 → 起 server → 部署 adapter → （視 auto_launch）開遊戲
         # 全程 try/except 容錯：任一步驟丟例外（如填錯 DeepL key、斷網）都要顯示錯誤訊息，
         # 不可讓例外逸出導致 Qt 事件迴圈崩潰或 UI 靜默卡住。
         try:
@@ -319,8 +453,13 @@ class MainWindow(QWidget):
                 offline_dict = {k: convert(v) for k, v in offline_dict.items()}
             deploy_mv_adapter(d.web_dir, port, maps, bridge_src=os.path.abspath(bridge),
                               offline_dict=offline_dict)
-            launch_game(self.exe_path)
-            if mode == "offline":
+
+            auto_launch = self.auto_launch_checkbox.isChecked()
+            if auto_launch:
+                launch_game(self.exe_path)
+            if not auto_launch:
+                self.info.setText("已部署，未啟動（你可自行開 Game.exe）")
+            elif mode == "offline":
                 self.info.setText("已啟動（離線字典模式），翻譯服務執行中…")
             elif mode == "local":
                 self.info.setText(
@@ -379,12 +518,19 @@ class MainWindow(QWidget):
         self.info.setText(f"翻譯中（Tyrano，{phase_label}）：{done}/{total}")
 
     def _on_tyrano_finished(self, stats: dict) -> None:
-        # 只負責啟動遊戲與更新訊息；執行緒參照的釋放交給 _on_tyrano_thread_finished。
+        # 只負責（視 auto_launch）啟動遊戲與更新訊息；執行緒參照的釋放交給
+        # _on_tyrano_thread_finished。
         try:
-            launch_game(self.exe_path)
-            self.info.setText(
-                "已完成翻譯並啟動（Tyrano）：翻了 %d/%d 段"
-                % (stats.get("translated", 0), stats.get("segments", 0)))
+            auto_launch = self.auto_launch_checkbox.isChecked()
+            if auto_launch:
+                launch_game(self.exe_path)
+                self.info.setText(
+                    "已完成翻譯並啟動（Tyrano）：翻了 %d/%d 段"
+                    % (stats.get("translated", 0), stats.get("segments", 0)))
+            else:
+                self.info.setText(
+                    "翻譯完成，未啟動（Tyrano）：翻了 %d/%d 段"
+                    % (stats.get("translated", 0), stats.get("segments", 0)))
         except Exception as e:
             self.info.setText(f"Tyrano 部署失敗：{e}")
 

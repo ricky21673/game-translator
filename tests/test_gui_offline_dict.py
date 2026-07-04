@@ -273,6 +273,7 @@ def test_deepl_mode_passes_none_to_deploy(tmp_path, monkeypatch):
     win.exe_path = str(game_dir / "Game.exe")
     win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
     win.dict_path = None
+    win.engine_box.setCurrentText("DeepL")  # 引擎下拉需明確切到 DeepL 才會走 deepl 分支
     win.key_edit.setText("sk-dummy-key-not-real")
 
     win.on_start()
