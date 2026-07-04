@@ -1,7 +1,12 @@
 # 測試 LocalTranslator（本地 Ollama 引擎）：用假 session，不打真的 Ollama 服務。
 import pytest
 import requests
-from core.translators.local import LocalTranslator, MAX_RETRIES
+from core.translators.local import (
+    LocalTranslator,
+    MAX_RETRIES,
+    SAKURA_SYSTEM_PROMPT,
+    SAKURA_USER_PREFIX,
+)
 from core.translators.deepl import TranslationError
 
 
@@ -183,6 +188,20 @@ def test_sentence_recovers_after_retry_within_max_retries():
 
     assert out == ["你好"]
     assert sess._call_count_by_text["こんにちは"] == 2  # 第一次失敗 + 重試成功
+
+
+def test_sakura_model_uses_sakura_system_and_user_prompt():
+    # 測試：模型名含 "sakura"（大小寫不拘）時，應改用 Sakura 專用提示詞格式：
+    # system 為 Sakura 固定系統提示，user 內容以「将下面的日文文本翻译成中文：」開頭並含原文
+    sess = FakeSession(FakeResp(200, {"message": {"content": "你好"}}))
+    LocalTranslator("Sakura-GalTransl", session=sess).translate(
+        ["こんにちは"], target_lang="ZH")
+    body = sess.calls[0]["json"]
+    messages = body["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == SAKURA_SYSTEM_PROMPT
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == SAKURA_USER_PREFIX + "こんにちは"
 
 
 def test_all_sentences_fail_returns_all_original_without_raising():

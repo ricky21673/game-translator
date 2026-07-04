@@ -15,6 +15,17 @@ SYSTEM_PROMPT = (
     "保留原文中的控制碼與符號（如 \\C[1]、\\n、%1）。"
 )
 
+# Sakura 專用提示詞（依 SakuraLLM 官方格式，非通用提示）。
+# Sakura（如 sakura、Sakura-GalTransl 系列模型）是專為日文輕小說／galgame
+# 翻譯微調的模型，只認得它固定的 system + user 格式，用通用提示會發揮不出實力。
+# system 提示固定不變、不含控制碼保留等額外指示。
+SAKURA_SYSTEM_PROMPT = (
+    "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体"
+    "中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
+)
+# user 內容固定前綴 + 日文原文，兩者直接相接，中間不加空白。
+SAKURA_USER_PREFIX = "将下面的日文文本翻译成中文："
+
 
 class LocalTranslator(Translator):
     """透過本機 Ollama 服務呼叫本地 LLM 做日文→中文翻譯的引擎。
@@ -28,6 +39,9 @@ class LocalTranslator(Translator):
         self.model = model
         self.url = f"http://{host}:{port}/api/chat"
         self.session = session or requests.Session()
+        # 模型名含 "sakura"（大小寫不拘）即視為 Sakura 系列模型，
+        # 送 /api/chat 時改用 Sakura 專用提示詞格式。
+        self._sakura = "sakura" in model.lower()
 
     def translate(self, texts: list[str], target_lang: str = "ZH",
                   source_lang: str | None = None) -> list[str]:
@@ -57,12 +71,19 @@ class LocalTranslator(Translator):
         return text
 
     def _call(self, text: str) -> str:
+        if self._sakura:
+            system_prompt = SAKURA_SYSTEM_PROMPT
+            user_content = SAKURA_USER_PREFIX + text
+        else:
+            system_prompt = SYSTEM_PROMPT
+            user_content = text
+
         body = {
             "model": self.model,
             "stream": False,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
             ],
         }
 
