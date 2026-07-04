@@ -5,7 +5,7 @@ from .translators.base import Translator
 class Pipeline:
     def __init__(self, cache: DictCache, translator: Translator,
                  target_lang: str, source_lang: str | None = None):
-        # 初始化管線：快取、翻譯引擎、目標語言、來源語言（選選項）
+        # 初始化管線：快取、翻譯引擎、目標語言、來源語言（可選項）
         self.cache = cache
         self.translator = translator
         self.target_lang = target_lang

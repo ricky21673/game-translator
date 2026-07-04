@@ -39,3 +39,25 @@ def test_order_preserved_with_mixed_and_duplicates(tmp_path):
     out = p.translate(["A", "B", "A"])
     assert out == ["A_翻", "B已", "A_翻"]
     assert tr.calls == [["A"]]  # 重複的 A 只送一次
+
+def test_all_cached_no_engine_call_and_no_save(tmp_path):
+    # 驗證全部命中快取時，引擎不被呼叫且不執行 save
+    cache = DictCache(str(tmp_path / "d.json"))
+    cache.put("X", "X譯")
+    cache.put("Y", "Y譯")
+    cache.put("Z", "Z譯")
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+
+    # 追蹤 save 被呼叫的次數
+    save_count = [0]
+    original_save = cache.save
+    def counting_save():
+        save_count[0] += 1
+        return original_save()
+    cache.save = counting_save
+
+    out = p.translate(["X", "Y", "Z"])
+    assert out == ["X譯", "Y譯", "Z譯"]
+    assert tr.calls == []  # 引擎完全沒被呼叫
+    assert save_count[0] == 0  # save 完全沒被呼叫
