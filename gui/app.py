@@ -219,8 +219,11 @@ class MainWindow(QWidget):
         game_box = QGroupBox("① 遊戲")
         game_lay = QVBoxLayout(game_box)
         self.pick_btn = QPushButton("選擇遊戲主程式…")
+        # 已選遊戲的持久顯示：選好後固定顯示是哪個遊戲，不會被之後的啟動/狀態訊息蓋掉
+        self.game_label = QLabel("尚未選擇遊戲")
         self.info = QLabel("請先選擇遊戲主程式")
         game_lay.addWidget(self.pick_btn)
+        game_lay.addWidget(self.game_label)
         game_lay.addWidget(self.info)
         lay.addWidget(game_box)
 
@@ -234,6 +237,9 @@ class MainWindow(QWidget):
 
         self.dict_btn = QPushButton("選擇字典 JSON…")
         engine_lay.addWidget(self.dict_btn)
+        # 顯示目前選了哪個字典檔（完整路徑），方便確認選對檔案
+        self.dict_label = QLabel("未選擇字典")
+        engine_lay.addWidget(self.dict_label)
 
         self.key_edit = QLineEdit()
         self.key_edit.setPlaceholderText("DeepL API Key")
@@ -259,7 +265,8 @@ class MainWindow(QWidget):
         # （現成字典、DeepL、本地 Ollama）多半輸出簡體，勾選後統一用 OpenCC
         # s2twp 過一次簡轉繁（含台灣慣用語）。
         self.traditional_checkbox = QCheckBox("繁體中文（台灣用語）")
-        self.traditional_checkbox.setChecked(True)
+        # 依使用者要求：預設關閉、且不顯示於 UI（物件保留供內部流程讀取為 False）
+        self.traditional_checkbox.setChecked(False)
         # 「使用全域共用字典（跨遊戲加速）」勾選框：預設勾選。勾選時 Pipeline 會
         # 額外查詢/寫入 ~/.game_translator/global_dict.json，讓 A 遊戲翻過的常見句子
         # （UI、常見用語、重複術語）在 B 遊戲直接命中、免再翻，越用越快；
@@ -281,8 +288,9 @@ class MainWindow(QWidget):
         #   （批次預翻本來就要等全部翻完才能玩，這裡讓使用者選擇翻完後要不要立刻玩）。
         self.auto_launch_checkbox = QCheckBox("翻完後自動啟動遊戲")
         self.auto_launch_checkbox.setChecked(True)
-        for w in (self.traditional_checkbox, self.global_dict_checkbox,
-                  self.store_converted_checkbox, self.auto_launch_checkbox):
+        # 依使用者要求：繁體（traditional）與存繁體（store_converted）兩個選項不顯示於 UI、
+        # 預設關閉；物件保留、供內部流程讀取為 False。要恢復顯示，把它們加回這個 tuple 即可。
+        for w in (self.global_dict_checkbox, self.auto_launch_checkbox):
             options_lay.addWidget(w)
         lay.addWidget(options_box)
 
@@ -373,9 +381,13 @@ class MainWindow(QWidget):
         # 顯示遊戲名（用上層資料夾名，通常即遊戲名）＋ exe 檔名，方便確認選對遊戲
         game_name = os.path.basename(self.detection.game_dir)
         exe_name = os.path.basename(path)
+        # 加密 MZ 額外標「（加密）」，讓使用者一眼看出走的是解密預翻路徑
+        engine_extra = "（加密）" if getattr(self.detection, "encrypted", False) else ""
+        # 已選遊戲寫進持久的 game_label（不會被之後的啟動/狀態訊息覆蓋）；info 只放就緒/狀態訊息
+        self.game_label.setText(
+            f"遊戲：{game_name}（{exe_name}）｜偵測到：{label}{engine_extra}")
         self.info.setText(
-            f"偵測到：{label}｜遊戲：{game_name}（{exe_name}）"
-            + ("" if ok else "（尚未支援，之後由 OCR/專屬 adapter 處理）"))
+            "可以開始翻譯" if ok else "此引擎尚未支援（之後由 OCR／專屬 adapter 處理）")
         # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」與「還原」
         self.start_btn.setEnabled(ok)
         self.restore_btn.setEnabled(can_restore(self.detection))
@@ -387,6 +399,7 @@ class MainWindow(QWidget):
         if not path:
             return
         self.dict_path = path
+        self.dict_label.setText(path)
 
     def _build_pipeline(self, d: Detection, mode: str, key: str) -> Pipeline:
         """

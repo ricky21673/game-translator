@@ -67,10 +67,11 @@ def test_offline_mode_passes_full_dict_to_deploy(tmp_path, monkeypatch):
         win.server.stop()
 
 
-def test_traditional_checkbox_default_checked():
-    # 「繁體中文（台灣用語）」勾選框預設應為勾選狀態（使用者要繁體）
+def test_traditional_checkbox_default_unchecked():
+    # 依使用者要求：「繁體中文（台灣用語）」勾選框改為預設關閉、且不顯示於 UI
+    # （物件保留供內部流程讀取為 False）
     win = app_module.MainWindow()
-    assert win.traditional_checkbox.isChecked() is True
+    assert win.traditional_checkbox.isChecked() is False
 
 
 def test_global_dict_checkbox_default_checked():
@@ -83,6 +84,23 @@ def test_store_converted_checkbox_default_unchecked():
     # 「翻譯 JSON 存繁體」勾選框預設應為未勾選（預設存簡體，較通用）
     win = app_module.MainWindow()
     assert win.store_converted_checkbox.isChecked() is False
+
+
+def test_new_persistent_labels_default_text():
+    # item 1/2：已選遊戲與已選字典的持久顯示標籤，預設文字
+    win = app_module.MainWindow()
+    assert win.game_label.text() == "尚未選擇遊戲"
+    assert win.dict_label.text() == "未選擇字典"
+
+
+def test_traditional_and_store_converted_hidden_from_ui():
+    # item 3：繁體/存繁體兩選項不加入版面（未 addWidget → parent 為 None），
+    # 但物件保留、預設 False；全域字典/自動啟動仍在版面上（parent 非 None）
+    win = app_module.MainWindow()
+    assert win.traditional_checkbox.parent() is None
+    assert win.store_converted_checkbox.parent() is None
+    assert win.global_dict_checkbox.parent() is not None
+    assert win.auto_launch_checkbox.parent() is not None
 
 
 def test_store_converted_checkbox_checked_passes_true_to_pipeline(tmp_path, monkeypatch):
