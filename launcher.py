@@ -5,6 +5,20 @@ import shutil
 import subprocess
 
 _PLUGIN_NAME = "ZZ_Translator_Bridge"
+_TRBAK_SUFFIX = ".trbak"  # 自動備份檔副檔名（保存部署前的原始檔案內容）
+
+
+def _backup_if_missing(path: str) -> None:
+    """
+    若 <path>.trbak 不存在，複製 path 成 .trbak（保住第一次部署前的原始版本）。
+    若 .trbak 已存在則不覆蓋，避免把最初的原始備份洗掉。
+    僅在 path 本身存在時才動作（找不到來源檔就略過，交由後續流程處理錯誤）。
+    """
+    trbak = path + _TRBAK_SUFFIX
+    if os.path.isfile(trbak):
+        return
+    if os.path.isfile(path):
+        shutil.copyfile(path, trbak)
 
 
 def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
@@ -31,6 +45,8 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
 
     # 3) 於 plugins.js 末端註冊該 plugin（可重入：檢查是否已註冊，不重複註冊）
     plugins_js = os.path.join(js_dir, "plugins.js")
+    # 修改前先備份原始檔（僅第一次部署會真的複製，之後保留最初版本）
+    _backup_if_missing(plugins_js)
     text = open(plugins_js, encoding="utf-8").read()
     if _PLUGIN_NAME not in text:
         # 構造新的 plugin entry（JSON 格式）
@@ -46,6 +62,8 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
 
     # 4) 確保 index.html 於載入 plugins.js 前引入 boot（可重入：檢查是否已引入）
     index = os.path.join(www_dir, "index.html")
+    # 修改前先備份原始檔（僅第一次部署會真的複製，之後保留最初版本）
+    _backup_if_missing(index)
     html = open(index, encoding="utf-8").read()
     if "translator_boot.js" not in html:
         # 在 plugins.js 的 script tag 前插入 boot script
@@ -58,6 +76,61 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         with open(index, "w", encoding="utf-8") as f:
             f.write(html)
     return dst
+
+
+def _restore_one_file(path: str, label: str) -> None:
+    """
+    還原單一檔案：若 <path>.trbak 存在 → 複製回 path，然後刪除該 .trbak；
+    若不存在 → 印繁中警告並略過。全程容錯，不拋例外，讓呼叫端可以繼續處理下一步。
+    """
+    trbak = path + _TRBAK_SUFFIX
+    if not os.path.isfile(trbak):
+        print(f"[警告] 找不到 {label} 備份，略過")
+        return
+    try:
+        shutil.copyfile(trbak, path)
+        os.remove(trbak)
+        print(f"已還原 {label}")
+    except OSError as e:
+        print(f"[警告] 還原 {label} 失敗：{e}")
+
+
+def _remove_if_exists(path: str, label: str) -> None:
+    """
+    刪除我方新增的檔案（存在才刪）。容錯：刪除失敗只印警告，不中斷整體還原流程。
+    """
+    if not os.path.isfile(path):
+        print(f"[提示] {label} 不存在，略過刪除")
+        return
+    try:
+        os.remove(path)
+        print(f"已刪除 {label}")
+    except OSError as e:
+        print(f"[警告] 刪除 {label} 失敗：{e}")
+
+
+def restore_mv_adapter(www_dir: str) -> None:
+    """
+    還原 MV adapter：把 deploy_mv_adapter 對遊戲檔案的修改復原成部署前的原始狀態。
+
+    流程（全程容錯，任一步驟失敗只印警告訊息，不會讓整個還原中止到一半而不提示）：
+    1) plugins.js：若有 .trbak → 複製回去、刪除 .trbak；沒有則印警告略過。
+    2) index.html：同上，用 index.html.trbak。
+    3) 刪除我方新增的兩個檔：js/plugins/ZZ_Translator_Bridge.js、js/translator_boot.js。
+    """
+    js_dir = os.path.join(www_dir, "js")
+
+    plugins_js = os.path.join(js_dir, "plugins.js")
+    _restore_one_file(plugins_js, "plugins.js")
+
+    index = os.path.join(www_dir, "index.html")
+    _restore_one_file(index, "index.html")
+
+    bridge = os.path.join(js_dir, "plugins", _PLUGIN_NAME + ".js")
+    _remove_if_exists(bridge, "ZZ_Translator_Bridge.js")
+
+    boot = os.path.join(js_dir, "translator_boot.js")
+    _remove_if_exists(boot, "translator_boot.js")
 
 
 def launch_game(exe_path: str) -> subprocess.Popen:

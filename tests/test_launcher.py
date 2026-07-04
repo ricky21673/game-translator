@@ -1,6 +1,6 @@
 import os
 import pytest
-from launcher import deploy_mv_adapter
+from launcher import deploy_mv_adapter, restore_mv_adapter
 
 def _mk_mv(tmp_path):
     # 建立一個簡易的 MV 遊戲資料夾結構（含 plugins.js 與 index.html）
@@ -83,3 +83,80 @@ def test_deploy_raises_when_index_html_has_no_plugins_js_load_point(tmp_path):
     (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
     with pytest.raises(RuntimeError):
         deploy_mv_adapter(str(www), 12345, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+
+
+# ---------------------------------------------------------------------------
+# 自動備份（.trbak）相關測試
+# ---------------------------------------------------------------------------
+
+def test_deploy_creates_trbak_backups_with_original_content(tmp_path):
+    # 部署後應在 plugins.js/index.html 旁各自留下 .trbak，內容等於部署「前」的原始內容
+    www = _mk_mv(tmp_path)
+    plugins_path = os.path.join(www, "js", "plugins.js")
+    index_path = os.path.join(www, "index.html")
+    original_plugins = open(plugins_path, encoding="utf-8").read()
+    original_index = open(index_path, encoding="utf-8").read()
+
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(www, 12345, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+
+    plugins_trbak = plugins_path + ".trbak"
+    index_trbak = index_path + ".trbak"
+    assert os.path.isfile(plugins_trbak)
+    assert os.path.isfile(index_trbak)
+    assert open(plugins_trbak, encoding="utf-8").read() == original_plugins
+    assert open(index_trbak, encoding="utf-8").read() == original_index
+
+
+def test_deploy_twice_keeps_original_trbak_content(tmp_path):
+    # 重複部署兩次：.trbak 仍必須是「最初」的原始內容，不可被第二次已修改版覆蓋
+    www = _mk_mv(tmp_path)
+    plugins_path = os.path.join(www, "js", "plugins.js")
+    index_path = os.path.join(www, "index.html")
+    original_plugins = open(plugins_path, encoding="utf-8").read()
+    original_index = open(index_path, encoding="utf-8").read()
+
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    b = str(src / "ZZ_Translator_Bridge.js")
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=b)
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=b)
+
+    plugins_trbak = plugins_path + ".trbak"
+    index_trbak = index_path + ".trbak"
+    assert open(plugins_trbak, encoding="utf-8").read() == original_plugins
+    assert open(index_trbak, encoding="utf-8").read() == original_index
+
+
+# ---------------------------------------------------------------------------
+# restore_mv_adapter 還原相關測試
+# ---------------------------------------------------------------------------
+
+def test_restore_after_deploy_reverts_files_and_cleans_up(tmp_path):
+    # deploy 後呼叫 restore：plugins.js/index.html 完全回到最初原始內容、
+    # 我方新增的兩個檔（bridge、boot）被刪除、.trbak 也被清掉
+    www = _mk_mv(tmp_path)
+    plugins_path = os.path.join(www, "js", "plugins.js")
+    index_path = os.path.join(www, "index.html")
+    original_plugins = open(plugins_path, encoding="utf-8").read()
+    original_index = open(index_path, encoding="utf-8").read()
+
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(www, 12345, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+
+    restore_mv_adapter(www)
+
+    assert open(plugins_path, encoding="utf-8").read() == original_plugins
+    assert open(index_path, encoding="utf-8").read() == original_index
+    assert not os.path.isfile(os.path.join(www, "js", "plugins", "ZZ_Translator_Bridge.js"))
+    assert not os.path.isfile(os.path.join(www, "js", "translator_boot.js"))
+    assert not os.path.isfile(plugins_path + ".trbak")
+    assert not os.path.isfile(index_path + ".trbak")
+
+
+def test_restore_without_prior_deploy_does_not_raise(tmp_path):
+    # 從未部署過（無 .trbak）的 www 呼叫 restore 應優雅略過，不拋例外
+    www = _mk_mv(tmp_path)
+    restore_mv_adapter(www)  # 不應拋例外

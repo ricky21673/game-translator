@@ -1,7 +1,7 @@
 # 測試 GUI 狀態機（can_start、choose_translator_mode）：
 # 不建立 QWidget，headless 環境下可跑。
 from core.detector import Detection
-from gui.app import can_start, choose_translator_mode
+from gui.app import can_start, can_restore, choose_translator_mode
 
 
 def test_no_selection_cannot_start():
@@ -22,6 +22,26 @@ def test_unknown_cannot_start():
 def test_unity_cannot_start_in_p1():
     # P1 尚未支援 Unity → 不能開始
     assert can_start(Detection("unity", "/g")) is False
+
+
+def test_restore_no_selection_cannot_restore():
+    # 未選擇遊戲（detection 為 None）→ 還原鈕不可用
+    assert can_restore(None) is False
+
+
+def test_restore_mv_can_restore():
+    # 偵測到 MV 引擎 → 還原鈕可用
+    assert can_restore(Detection("mv", "/g", "/g/www", "/g/www/js")) is True
+
+
+def test_restore_unknown_cannot_restore():
+    # 未知引擎 → 還原鈕不可用
+    assert can_restore(Detection("unknown", "/g")) is False
+
+
+def test_restore_unity_cannot_restore_in_p1():
+    # P1 尚未支援 Unity → 還原鈕不可用
+    assert can_restore(Detection("unity", "/g")) is False
 
 
 def test_only_dict_json_chooses_offline():

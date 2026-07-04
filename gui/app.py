@@ -16,7 +16,7 @@ from core.pipeline import Pipeline
 from core.server import TranslationServer
 from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
-from launcher import deploy_mv_adapter, launch_game
+from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 
 SUPPORTED = ("mv",)  # P1 只支援 MV
 
@@ -31,6 +31,18 @@ def can_start(detection: Detection | None, engine_supported=SUPPORTED) -> bool:
     if detection is None:
         return False
     return detection.engine in engine_supported
+
+
+def can_restore(detection: Detection | None, engine_supported=SUPPORTED) -> bool:
+    """
+    「還原遊戲」鈕是否可用的純函式判斷（沿用 can_start 的規則）：
+    - 尚未選擇遊戲（detection 為 None）→ False
+    - 引擎不在支援名單內（目前僅 P1 支援的 mv）→ False
+    - 其餘 → True
+    與 can_start 邏輯目前相同，獨立成另一個函式是為了讓「開始」與「還原」
+    兩顆鈕的啟用條件可以各自演進而不互相牽動。
+    """
+    return can_start(detection, engine_supported)
 
 
 def choose_translator_mode(dict_path: str | None, key: str) -> str:
@@ -67,15 +79,18 @@ class MainWindow(QWidget):
         self.dict_btn = QPushButton("選擇既有字典 JSON（離線，可不填 key）")
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
+        self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
+        self.restore_btn.setEnabled(False)
 
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
-                  self.dict_btn, self.start_btn):
+                  self.dict_btn, self.start_btn, self.restore_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
         self.dict_btn.clicked.connect(self.on_pick_dict)
         self.start_btn.clicked.connect(self.on_start)
+        self.restore_btn.clicked.connect(self.on_restore)
 
     def on_pick(self):
         # 開檔案選擇對話框，選取遊戲主程式（.exe）
@@ -92,8 +107,9 @@ class MainWindow(QWidget):
         ok = can_start(self.detection)
         self.info.setText(
             f"偵測到：{label}" + ("" if ok else "（P1 尚未支援，之後由 OCR/專屬 adapter 處理）"))
-        # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」
+        # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」與「還原」
         self.start_btn.setEnabled(ok)
+        self.restore_btn.setEnabled(can_restore(self.detection))
 
     def on_pick_dict(self):
         # 開檔案選擇對話框，選取既有字典 JSON（離線字典模式用）
@@ -157,3 +173,18 @@ class MainWindow(QWidget):
                 self.info.setText("已啟動遊戲，翻譯服務執行中…")
         except Exception as e:
             self.info.setText(f"啟動失敗：{e}")
+
+    def on_restore(self):
+        # 核心規則守衛：沒選遊戲/不支援引擎 → 不能還原（邏輯層生效，不只靠 UI 的 setEnabled）
+        if not can_restore(self.detection):
+            return
+        # 全程 try/except 容錯：還原失敗要顯示錯誤訊息，不可讓例外逸出導致 Qt 事件迴圈崩潰
+        try:
+            # 還原前先停掉目前執行中的翻譯 server（若有），避免遊戲仍佔用/依賴中的服務衝突
+            if self.server:
+                self.server.stop()
+                self.server = None
+            restore_mv_adapter(self.detection.www_dir)
+            self.info.setText("已還原遊戲原始檔")
+        except Exception as e:
+            self.info.setText(f"還原失敗：{e}")
