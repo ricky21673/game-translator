@@ -335,8 +335,12 @@ class MainWindow(QWidget):
                  "unknown": "未知引擎"}.get(
                      self.detection.engine, f"未知引擎（{self.detection.engine}）")
         ok = can_start(self.detection)
+        # 顯示遊戲名（用上層資料夾名，通常即遊戲名）＋ exe 檔名，方便確認選對遊戲
+        game_name = os.path.basename(self.detection.game_dir)
+        exe_name = os.path.basename(path)
         self.info.setText(
-            f"偵測到：{label}" + ("" if ok else "（P1 尚未支援，之後由 OCR/專屬 adapter 處理）"))
+            f"偵測到：{label}｜遊戲：{game_name}（{exe_name}）"
+            + ("" if ok else "（尚未支援，之後由 OCR/專屬 adapter 處理）"))
         # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」與「還原」
         self.start_btn.setEnabled(ok)
         self.restore_btn.setEnabled(can_restore(self.detection))
