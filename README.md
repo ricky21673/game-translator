@@ -15,9 +15,12 @@
 |---|---|---|
 | **RPG Maker MV** | `www/js/rpg_core.js` | 塞 JS plugin（遊戲自己載入）+ 底層畫字 hook 即時查表 |
 | **RPG Maker MZ** | `js/rmmz_core.js` | 同上（注入點改在 `main.js` 前） |
+| **加密 RPG Maker MZ** | `data/*.json` 為 `{uid,bid,data}` 密文 | 部署時 Python 解密（自動爆破金鑰）→ 抽字 → Sakura 批次預翻建完整離線字典 → 離線 hook 查表；`data` 檔零改動 |
 | **TyranoScript（Electron 打包）** | `resources/app.asar` 內含 `.ks` | 解包 asar → 批次預翻 `.ks`（含回想/畫廊/選單等資料陣列文字）→ 改名 asar 讓遊戲改用翻好的資料夾 |
 
-> 選遊戲主程式後**自動判型**。Unity / 原生 / 加密遊戲目前未支援（見「規劃中」的 OCR 兜底）。
+> 選遊戲主程式後**自動判型**（加密 MZ 會另標「（加密）」）。Unity / 原生遊戲目前未支援（見「規劃中」的 OCR 兜底）。
+>
+> 加密 MZ 目前針對 `bid 1.8.1` 加密器家族（同款被許多同人 MZ 採用，金鑰自動偵測）。解密已對真實遊戲驗證；整款端到端翻譯覆蓋率需實機驗收。
 
 ---
 
@@ -101,6 +104,13 @@ python -m venv .venv
    - **DeepL**：填 API key。
 3.（可搭配上面的翻譯選項）按 **開始** → 自動部署 + 直接啟動遊戲（不經 inject.exe）。首次遇到的文字即時翻、之後走快取。
 
+### 加密 RPG Maker MZ
+1. 選遊戲主程式 → 顯示「偵測到：RPG Maker MZ（加密）」。
+2. 引擎選「本地 Ollama」、模型 `sakura`（加密遊戲拿不到現成完整字典，靠引擎預翻補齊）。
+3. 按 **開始** → **背景解密全部 `data` → 抽字 → Sakura 批次預翻**（跳出翻譯監控面板顯示進度）→ 翻完自動啟動。
+   - `data/*.json` **全程不改**：遊戲執行期自己解密進記憶體，我方只在部署時讀取用來建字典；離線 hook 於畫字當下查表替換。
+   - 遊戲若附現成 `翻译文件.json`(MTool) 會自動併入當底，已翻的不重翻。
+
 ### TyranoScript
 1. 選遊戲主程式 → 顯示「偵測到：TyranoScript」。
 2. 選翻譯來源（同上）。
@@ -150,8 +160,10 @@ python -m venv .venv
 
 ## 規劃中（未完成）
 
-- **P2 OCR 通用兜底**：截圖 + manga-ocr/PaddleOCR + 復用引擎 + 疊字，涵蓋 Unity / 原生 / **加密遊戲** / 烤進 CG 圖片裡的文字。
-- **加密 JS 遊戲**的「執行期即時 hook」（比 OCR 準）。
+- **P2 OCR 通用兜底**：截圖 + manga-ocr/PaddleOCR + 復用引擎 + 疊字，涵蓋 Unity / 原生 / 烤進 CG 圖片裡的文字。
 - 本地 LLM 批次速度優化、提示詞對包裹標籤（如 `[font_blue]…[resetfont]`）的保留。
+- 其他 `bid`／加密器家族的支援（目前解密器涵蓋 `bid 1.8.1`，已預留 scheme 擴充點）。
+
+> **加密 JS 遊戲**原規劃的「執行期即時 hook」已改由**部署時檔案解密**解決（見支援矩陣的「加密 RPG Maker MZ」）——實測該類遊戲僅有一層檔案加密、破解後即乾淨日文，不需執行期 hook。
 
 > 完整的未完成事項、已知限制與接手指南見**交接文件** `docs/superpowers/specs/2026-07-04-handoff.md`。

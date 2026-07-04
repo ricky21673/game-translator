@@ -2,7 +2,7 @@
 
 > 本文件反映**目前實際實作**的完整架構，取代早期只涵蓋 P1（MV 骨架）的
 > `2026-07-04-game-translator-p1-design.md`（該份與其 plan 保留作歷史紀錄）。
-> 測試現況：123 passed。
+> 測試現況：約 198 passed（含加密 MZ 支援；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
 
 ---
 
@@ -24,9 +24,9 @@
 |---|---|---|---|
 | RPG Maker MV | `www/js/rpg_core.js` | JS plugin：整字典嵌入 + 底層畫字 hook 即時查表 | ✅ |
 | RPG Maker MZ | `js/rmmz_core.js` | 同上（index.html 注入點改在 `main.js` 前） | ✅ |
+| 加密 RPG Maker MZ | `data/*.json` 為 `{uid,bid,data}` 密文 | 部署時 Python 解密（自動爆破金鑰，`bid 1.8.1` 家族）→ 抽字 → Sakura 批次預翻建離線字典 → 離線 hook 查表；`data` 零改動 | ✅ 程式碼完成／端到端實機驗收待做 |
 | TyranoScript（Electron） | `resources/app.asar` 內含 `.ks` | 解包 asar → 批次翻 `.ks` → 改名 asar 讓 Electron 用 `app/` | ✅ |
 | Unity / 原生 Win32 | — | （未支援）規劃由 P2 OCR 兜底 | ⏳ |
-| 加密 JS 遊戲（如加密 MZ） | 資料為密文、執行期解密 | 現有 hook 命中率低；規劃「執行期即時 hook」或 OCR | ⏳ |
 
 ---
 
@@ -94,8 +94,8 @@
 
 ## 8. 已知限制與路線圖
 
-- **加密 JS 遊戲**：資料密文、現有 hook 命中率低（見 §2）。方案：執行期即時 hook 或 OCR。
-- **P2 OCR 通用兜底**（未實作）：截圖 + manga-ocr/PaddleOCR + 復用引擎 + PySide6 疊字；用於 Unity/原生/圖內文字/加密等 hook 不到的情況。可靠度：乾淨對話框高、文字疊 CG 低。
+- **加密 RPG Maker MZ**：✅ 已支援（見 §2）。部署時 Python 解密 `{uid,bid,data}`（自動爆破金鑰、`bid 1.8.1` 家族）→ 抽字 → Sakura 批次預翻建離線字典；`data` 零改動。新增模組 `core/mz_decrypt.py`、`core/mz_extract.py`、`core/translators/protect.py`（控制碼保護）、`adapters/mz/pretranslate.py`。端到端實機驗收待做。
+- **P2 OCR 通用兜底**（未實作）：截圖 + manga-ocr/PaddleOCR + 復用引擎 + PySide6 疊字；用於 Unity/原生/圖內文字等 hook 不到的情況。可靠度：乾淨對話框高、文字疊 CG 低。
 - **s2twp 偶爾過度在地化**（如 `选择项目→選擇專案`）；GalGame 容錯高，必要時可改 `s2t`。
 - **全域字典**目前無 GUI 清空/自訂路徑/淘汰機制；離線整字典嵌入模式不含全域字典內容。
 
@@ -103,5 +103,5 @@
 
 ## 9. 測試
 
-- `pytest`：123 passed（detector/cache/translators/pipeline/server/asar/tyrano/launcher/gui 狀態機/postprocess/paths…）。
+- `pytest`：約 198 passed（detector/cache/translators/pipeline/server/asar/tyrano/launcher/gui 狀態機/postprocess/paths + 加密 MZ 解密/抽字/控制碼保護/批次預翻…；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
 - 遊戲端 JS 以 `node --check` 靜態驗；真實遊戲的視覺翻譯由使用者實機驗收。
