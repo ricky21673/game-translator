@@ -65,7 +65,8 @@ class MainWindow(QWidget):
         self.detection = detect(path)
         label = {"mv": "RPG Maker MV", "mz": "RPG Maker MZ",
                  "unity": "Unity", "tyrano": "TyranoScript",
-                 "unknown": "未知引擎"}[self.detection.engine]
+                 "unknown": "未知引擎"}.get(
+                     self.detection.engine, f"未知引擎（{self.detection.engine}）")
         ok = can_start(self.detection)
         self.info.setText(
             f"偵測到：{label}" + ("" if ok else "（P1 尚未支援，之後由 OCR/專屬 adapter 處理）"))
@@ -73,22 +74,33 @@ class MainWindow(QWidget):
         self.start_btn.setEnabled(ok)
 
     def on_start(self):
+        # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
+        if not can_start(self.detection):
+            return
         # 整合流程：讀地圖 → 起 server → 部署 adapter → 開遊戲
-        d = self.detection
-        maps = []
-        for mp in sorted(glob.glob(os.path.join(d.www_dir, "data", "Map*.json"))):
-            try:
-                maps.append(json.load(open(mp, encoding="utf-8")))
-            except Exception:
-                pass
-        key = self.key_edit.text().strip()
-        cache = DictCache(os.path.join(d.game_dir, "translator_dict.json"))
-        pipe = Pipeline(cache, DeepLTranslator(key, free=True),
-                        target_lang="ZH", source_lang="JA")
-        self.server = TranslationServer(pipe, port=0)
-        port = self.server.start()
-        bridge = os.path.join(os.path.dirname(__file__), "..",
-                              "adapters", "mv", "ZZ_Translator_Bridge.js")
-        deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge))
-        launch_game(self.exe_path)
-        self.info.setText("已啟動遊戲，翻譯服務執行中…")
+        # 全程 try/except 容錯：任一步驟丟例外（如填錯 DeepL key、斷網）都要顯示錯誤訊息，
+        # 不可讓例外逸出導致 Qt 事件迴圈崩潰或 UI 靜默卡住。
+        try:
+            d = self.detection
+            maps = []
+            for mp in sorted(glob.glob(os.path.join(d.www_dir, "data", "Map*.json"))):
+                try:
+                    maps.append(json.load(open(mp, encoding="utf-8")))
+                except (json.JSONDecodeError, OSError) as e:
+                    print(f"[警告] 讀取地圖失敗 {mp}: {e}")
+            key = self.key_edit.text().strip()
+            cache = DictCache(os.path.join(d.game_dir, "translator_dict.json"))
+            pipe = Pipeline(cache, DeepLTranslator(key, free=True),
+                            target_lang="ZH", source_lang="JA")
+            # 重複點開始不疊加多個 server：起新 server 前先關掉舊的
+            if self.server:
+                self.server.stop()
+            self.server = TranslationServer(pipe, port=0)
+            port = self.server.start()
+            bridge = os.path.join(os.path.dirname(__file__), "..",
+                                  "adapters", "mv", "ZZ_Translator_Bridge.js")
+            deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge))
+            launch_game(self.exe_path)
+            self.info.setText("已啟動遊戲，翻譯服務執行中…")
+        except Exception as e:
+            self.info.setText(f"啟動失敗：{e}")
