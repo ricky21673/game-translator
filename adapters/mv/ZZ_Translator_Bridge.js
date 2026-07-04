@@ -5,7 +5,40 @@
 (function () {
   "use strict";
 
-  var dict = Object.create(null); // 原文 -> 譯文
+  var dict = Object.create(null); // 原文（或正規化內文）-> 譯文
+
+  // --- 正規化：剝除「說話者名條前綴」與「plugin 條件/script 前綴」---
+  // 實測發現整串查表命中率偏低，是因為對話文字常帶固定格式的前綴：
+  //   1. 說話者名條：字面上的 \n<名字> （注意：資料內是「反斜線 + n + < 名 >」共兩個字元的跳脫記號，非真正換行）
+  //   2. plugin 條件/script 前綴：en(...) 或 if(...)，例如 en(s[441])、if(v[29]==1)
+  // 反覆剝除直到不再變化，再修剪頭尾全形/半形空白，即可還原「純內文」用來查表命中。
+  var RE_SPEAKER_TAG = /^\\n<[^>]*>/;
+  var RE_PLUGIN_COND = /^(?:en|if)\([^)]*\)/;
+  var RE_LEADING_SPACE = /^[\s　]+/;
+  var RE_TRAILING_SPACE = /[\s　]+$/;
+
+  function normalize(text) {
+    if (typeof text !== "string" || !text) return { prefix: "", inner: text };
+    // 用「已剝除的頭部字元數」直接記錄剝除量，而非事後用長度差反推——
+    // 因為尾端還會再修剪空白，若用「text.length - inner.length」反推頭部剝除量，
+    // 會把尾端剝掉的量也算進頭部，導致 prefix 多切、少切字元（切錯位置）。
+    var cut = 0; // 累計從頭部剝除的字元數
+    var rest = text;
+    var changed = true;
+    // 迴圈套用「名條」「plugin 前綴」「頭部空白」三種 lstrip，直到不再變化為止
+    while (changed) {
+      changed = false;
+      var m;
+      if ((m = rest.match(RE_SPEAKER_TAG))) { rest = rest.slice(m[0].length); cut += m[0].length; changed = true; }
+      if ((m = rest.match(RE_PLUGIN_COND))) { rest = rest.slice(m[0].length); cut += m[0].length; changed = true; }
+      if ((m = rest.match(RE_LEADING_SPACE))) { rest = rest.slice(m[0].length); cut += m[0].length; changed = true; }
+    }
+    // 頭部剝除完成後才修剪尾端空白，inner 是「乾淨內文」，方便查表命中；
+    // prefix 只用「頭部剝除量 cut」切，與尾端修剪完全無關，避免上述錯位。
+    var inner = rest.replace(RE_TRAILING_SPACE, "");
+    var prefix = text.slice(0, cut);
+    return { prefix: prefix, inner: inner };
+  }
 
   // 延後讀取 PORT／組 ENDPOINT：不在 IIFE 載入當下就讀，避免與 boot script
   // 載入順序耦合（bridge 若比 boot 先執行，當下讀到的 window.$TRANSLATOR_PORT
@@ -19,7 +52,16 @@
   function collectStrings() {
     var set = Object.create(null);
     function add(s) {
-      if (typeof s === "string" && s.trim() && /[぀-ヿ一-鿿]/.test(s)) set[s] = 1;
+      if (typeof s === "string" && s.trim() && /[぀-ヿ一-鿿]/.test(s)) {
+        set[s] = 1;
+        // 額外送「正規化內文」：對話文字常帶說話者名條/plugin 前綴，
+        // 導致整串在離線字典查不到；改送 inner 讓字典能用內文命中，
+        // hook 端再用同一份 normalize 邏輯查表、保留原前綴顯示。
+        try {
+          var inner = normalize(s).inner;
+          if (inner && inner !== s && /[぀-ヿ一-鿿]/.test(inner)) set[inner] = 1;
+        } catch (e) { console.warn("[Translator_Bridge] 正規化抽字串失敗，略過內文:", e); }
+      }
     }
     // 各資料庫的 name / description
     [$dataActors, $dataItems, $dataSkills, $dataWeapons, $dataArmors,
@@ -69,10 +111,21 @@
     xhr.send(JSON.stringify({ texts: texts }));
   }
 
-  // --- hook：整串查表替換（查不到就回原文）---
+  // --- hook：先試整串查表；未命中則正規化剝前綴後、用內文查表命中，保留原前綴 ---
   var _conv = Window_Base.prototype.convertEscapeCharacters;
   Window_Base.prototype.convertEscapeCharacters = function (text) {
-    if (dict[text]) text = dict[text];
+    try {
+      if (typeof text === "string") {
+        if (dict[text] && dict[text] !== text) {
+          text = dict[text];
+        } else {
+          var norm = normalize(text);
+          if (norm.inner && dict[norm.inner] && dict[norm.inner] !== norm.inner) {
+            text = norm.prefix + dict[norm.inner];
+          }
+        }
+      }
+    } catch (e) { console.warn("[Translator_Bridge] 查表替換失敗，維持原文:", e); }
     return _conv.call(this, text);
   };
 
