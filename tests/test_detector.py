@@ -160,3 +160,33 @@ def test_empty_resources_dir_not_detected_as_tyrano(tmp_path):
     d = detect(str(game / "Game.exe"))
 
     assert d.engine == "unknown"
+
+
+import json as _json
+
+
+def _make_mz(tmp_path, data_files):
+    js = tmp_path / "js"
+    js.mkdir()
+    (js / "rmmz_core.js").write_text("// core", encoding="utf-8")
+    data = tmp_path / "data"
+    data.mkdir()
+    for name, content in data_files.items():
+        (data / name).write_text(_json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    return str(tmp_path / "Game.exe")
+
+
+def test_detect_mz_plain_is_not_encrypted(tmp_path):
+    from core.detector import detect
+    exe = _make_mz(tmp_path, {"Map001.json": {"events": []}})
+    d = detect(exe)
+    assert d.engine == "mz"
+    assert d.encrypted is False
+
+
+def test_detect_mz_encrypted_flag(tmp_path):
+    from core.detector import detect
+    exe = _make_mz(tmp_path, {"Map001.json": {"uid": "x", "bid": "1.8.1", "data": "QUJD"}})
+    d = detect(exe)
+    assert d.engine == "mz"
+    assert d.encrypted is True

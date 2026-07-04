@@ -1,7 +1,9 @@
+import json
 import os
 from dataclasses import dataclass
 
 from .asar import read_asar_header, iter_files
+from .mz_decrypt import is_encrypted_mz
 
 
 @dataclass
@@ -17,12 +19,27 @@ class Detection:
     - web_dir: 含 index.html 與 js/ 的目錄（MV/MZ 部署與注入流程共用的基準目錄）。
       MV 時等於 www_dir；MZ（無 www，根目錄即含 js/）時等於 game_dir。
       unity/tyrano/unknown 維持 None。
+    - encrypted: MZ 遊戲是否為加密格式（預設 False，向後相容）。
     """
     engine: str
     game_dir: str
     www_dir: str | None = None
     js_dir: str | None = None
     web_dir: str | None = None
+    encrypted: bool = False
+
+
+def _mz_data_encrypted(web_dir: str) -> bool:
+    """peek data/ 內第一個 *.json（跳過空/損毀檔），判斷是否為加密 MZ 格式。"""
+    import glob
+    for path in sorted(glob.glob(os.path.join(web_dir, "data", "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                obj = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        return is_encrypted_mz(obj)
+    return False
 
 
 def detect(exe_path: str) -> Detection:
@@ -56,7 +73,9 @@ def detect(exe_path: str) -> Detection:
             return Detection("mv", game_dir, www, js_dir, os.path.dirname(js_dir))
         if os.path.isfile(os.path.join(js_dir, "rmmz_core.js")):
             www = base if os.path.basename(base) == "www" else None
-            return Detection("mz", game_dir, www, js_dir, os.path.dirname(js_dir))
+            web_dir = os.path.dirname(js_dir)
+            return Detection("mz", game_dir, www, js_dir, web_dir,
+                             encrypted=_mz_data_encrypted(web_dir))
 
     # Unity：UnityPlayer.dll 或任何 *_Data 目錄
     if os.path.isfile(os.path.join(game_dir, "UnityPlayer.dll")):
