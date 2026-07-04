@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+from .asar import read_asar_header, iter_files
+
 
 @dataclass
 class Detection:
@@ -31,7 +33,8 @@ def detect(exe_path: str) -> Detection:
     - MV: 透過檢查 rpg_core.js 檔案（在 www/js 或根 js 目錄）
     - MZ: 透過檢查 rmmz_core.js 檔案（在 www/js 或根 js 目錄）
     - Unity: 透過檢查 UnityPlayer.dll 或 *_Data 目錄
-    - TyranoScript: 透過檢查 data/scenario 目錄
+    - TyranoScript（Electron 打包）: 透過 resources/app.asar 內是否含 .ks 檔或路徑含 "tyrano"
+    - TyranoScript（未打包）: 透過檢查 data/scenario 目錄
     - 未知: 無法識別時回傳此項
 
     參數：
@@ -62,7 +65,22 @@ def detect(exe_path: str) -> Detection:
             if name.endswith("_Data") and os.path.isdir(os.path.join(game_dir, name)):
                 return Detection("unity", game_dir)
 
-    # TyranoScript
+    # TyranoScript（Electron 打包）：resources/app.asar 內含 .ks 檔或路徑含 "tyrano"
+    asar_path = os.path.join(game_dir, "resources", "app.asar")
+    if os.path.isfile(asar_path):
+        try:
+            header, _base, _data = read_asar_header(asar_path)
+            files = iter_files(header)
+        except Exception:
+            # 讀取失敗（非合法 asar 或格式不符）就不判為 tyrano，往下走
+            files = None
+        if files is not None:
+            for rel_path, _size, _offset in files:
+                lower = rel_path.lower()
+                if lower.endswith(".ks") or "tyrano" in lower:
+                    return Detection("tyrano", game_dir)
+
+    # TyranoScript（未打包，直接解壓）
     if os.path.isdir(os.path.join(game_dir, "data", "scenario")):
         return Detection("tyrano", game_dir)
 

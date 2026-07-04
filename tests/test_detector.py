@@ -1,9 +1,45 @@
+import json
 import os
+import struct
+
 from core.detector import detect
 
 def _touch(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "w", encoding="utf-8").close()
+
+
+def _pack_asar(files: dict[str, bytes]) -> bytes:
+    # 與 tests/test_asar.py 相同的最小 asar 打包工具，供 detector 的 tyrano 判定測試共用
+    offset = 0
+    root: dict = {"files": {}}
+    contents: list[bytes] = []
+    for rel_path, content in files.items():
+        parts = rel_path.split("/")
+        node = root
+        for part in parts[:-1]:
+            node = node["files"].setdefault(part, {"files": {}})
+        node["files"][parts[-1]] = {"size": len(content), "offset": str(offset)}
+        contents.append(content)
+        offset += len(content)
+
+    header_json = json.dumps(root).encode("utf-8")
+    json_len = len(header_json)
+    pad = (4 - (json_len % 4)) % 4
+    padded_json = header_json + b"\x00" * pad
+    payload_size = 4 + len(padded_json)
+    header_size = 4 + payload_size
+    outer_size = 4 + header_size
+
+    buf = (
+        struct.pack("<I", outer_size)
+        + struct.pack("<I", header_size)
+        + struct.pack("<I", payload_size)
+        + struct.pack("<I", json_len)
+        + padded_json
+    )
+    buf += b"".join(contents)
+    return buf
 
 def test_detects_mv_with_www(tmp_path):
     # 驗證有 www/js/rpg_core.js 時判定為 MV 且 www_dir 和 js_dir 正確
@@ -38,3 +74,51 @@ def test_unknown(tmp_path):
     game = tmp_path / "game"
     _touch(str(game / "Game.exe"))
     assert detect(str(game / "Game.exe")).engine == "unknown"
+
+
+def test_detects_tyrano_via_electron_asar(tmp_path):
+    # 驗證 resources/app.asar 內含 .ks 檔時判定為 tyrano（Electron 打包情境）
+    game = tmp_path / "game"
+    resources = game / "resources"
+    os.makedirs(str(resources))
+    files = {
+        "data/scenario/first.ks": "第一話".encode("utf-8"),
+        "index.html": b"<html></html>",
+    }
+    asar_bytes = _pack_asar(files)
+    (resources / "app.asar").write_bytes(asar_bytes)
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "tyrano"
+    assert d.game_dir == str(game)
+    assert d.web_dir is None
+
+
+def test_asar_without_ks_or_tyrano_not_detected_as_tyrano(tmp_path):
+    # 驗證 app.asar 存在但內容與 .ks/tyrano 無關時，不誤判為 tyrano
+    game = tmp_path / "game"
+    resources = game / "resources"
+    os.makedirs(str(resources))
+    files = {"main.js": b"console.log('hi')"}
+    asar_bytes = _pack_asar(files)
+    (resources / "app.asar").write_bytes(asar_bytes)
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "unknown"
+
+
+def test_corrupt_asar_does_not_crash_detect(tmp_path):
+    # 驗證損毀/非法的 app.asar 讀取失敗時，不判為 tyrano 也不拋例外
+    game = tmp_path / "game"
+    resources = game / "resources"
+    os.makedirs(str(resources))
+    (resources / "app.asar").write_bytes(b"not a real asar file")
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "unknown"
