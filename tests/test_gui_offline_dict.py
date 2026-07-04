@@ -50,6 +50,9 @@ def test_offline_mode_passes_full_dict_to_deploy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app_module, "deploy_mv_adapter", fake_deploy)
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    # 全域共用字典路徑導向 tmp_path，避免測試碰到使用者真實 home 目錄
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -68,6 +71,59 @@ def test_traditional_checkbox_default_checked():
     # 「繁體中文（台灣用語）」勾選框預設應為勾選狀態（使用者要繁體）
     win = app_module.MainWindow()
     assert win.traditional_checkbox.isChecked() is True
+
+
+def test_global_dict_checkbox_default_checked():
+    # 「使用全域共用字典（跨遊戲加速）」勾選框預設應為勾選狀態
+    win = app_module.MainWindow()
+    assert win.global_dict_checkbox.isChecked() is True
+
+
+def test_global_dict_checked_passes_global_cache_to_pipeline(tmp_path, monkeypatch):
+    # 勾選全域共用字典時，_build_pipeline 應把 DictCache(global_dict_path()) 傳給 Pipeline
+    game_dir, www = _mk_mv_game(tmp_path)
+
+    def fake_launch(exe_path):
+        return None
+
+    monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    global_path = str(tmp_path / "global_dict.json")
+    monkeypatch.setattr(app_module, "global_dict_path", lambda: global_path)
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
+    win.dict_path = None
+    win.key_edit.setText("")  # 離線模式（offline），不需 key
+    win.global_dict_checkbox.setChecked(True)
+
+    pipe = win._build_pipeline(win.detection, "offline", "")
+
+    assert pipe.global_cache is not None
+    assert pipe.global_cache.path == global_path
+
+
+def test_global_dict_unchecked_passes_none_to_pipeline(tmp_path, monkeypatch):
+    # 未勾選全域共用字典時，_build_pipeline 應傳 global_cache=None（維持既有行為）
+    game_dir, www = _mk_mv_game(tmp_path)
+
+    def fake_launch(exe_path):
+        return None
+
+    monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.global_dict_checkbox.setChecked(False)
+
+    pipe = win._build_pipeline(win.detection, "offline", "")
+
+    assert pipe.global_cache is None
 
 
 def test_offline_mode_with_traditional_checked_converts_dict_values(tmp_path, monkeypatch):
@@ -91,6 +147,8 @@ def test_offline_mode_with_traditional_checked_converts_dict_values(tmp_path, mo
 
     monkeypatch.setattr(app_module, "deploy_mv_adapter", fake_deploy)
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -129,6 +187,8 @@ def test_offline_mode_with_traditional_unchecked_keeps_original_values(tmp_path,
 
     monkeypatch.setattr(app_module, "deploy_mv_adapter", fake_deploy)
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -159,6 +219,8 @@ def test_deepl_mode_passes_none_to_deploy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app_module, "deploy_mv_adapter", fake_deploy)
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")

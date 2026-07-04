@@ -126,6 +126,70 @@ def test_large_missing_set_is_translated_and_saved_in_batches(tmp_path):
         assert reloaded.get(t) == t + "_翻"
 
 
+def test_global_cache_hit_when_game_cache_misses_no_engine_call(tmp_path):
+    # 分層查詢核心情境：遊戲私有字典沒有，但全域共用字典有 → 應直接命中全域字典，
+    # 不呼叫引擎（這正是「A 遊戲翻過的句子在 B 遊戲直接命中」的效果）
+    game_cache = DictCache(str(tmp_path / "game_dict.json"))
+    global_cache = DictCache(str(tmp_path / "global_dict.json"))
+    global_cache.put("こんにちは", "你好")  # 模擬 A 遊戲已翻過、寫進全域字典
+
+    tr = SpyTranslator()
+    p = Pipeline(game_cache, tr, target_lang="ZH", global_cache=global_cache)
+
+    out = p.translate(["こんにちは"])
+
+    assert out == ["你好"]
+    assert tr.calls == []  # 全域字典命中，引擎完全不被呼叫
+
+
+def test_game_cache_takes_priority_over_global_cache(tmp_path):
+    # 遊戲私有字典優先於全域字典：兩邊都有同一個原文時，取遊戲私有字典的版本
+    game_cache = DictCache(str(tmp_path / "game_dict.json"))
+    game_cache.put("はい", "遊戲版-是")
+    global_cache = DictCache(str(tmp_path / "global_dict.json"))
+    global_cache.put("はい", "全域版-是")
+
+    tr = SpyTranslator()
+    p = Pipeline(game_cache, tr, target_lang="ZH", global_cache=global_cache)
+
+    out = p.translate(["はい"])
+
+    assert out == ["遊戲版-是"]
+    assert tr.calls == []
+
+
+def test_neither_cache_has_it_engine_translates_and_writes_both(tmp_path):
+    # 兩本字典都沒有 → 送引擎翻譯，結果須同時寫進遊戲私有字典與全域字典兩本
+    game_cache = DictCache(str(tmp_path / "game_dict.json"))
+    global_cache = DictCache(str(tmp_path / "global_dict.json"))
+
+    tr = SpyTranslator()
+    p = Pipeline(game_cache, tr, target_lang="ZH", global_cache=global_cache)
+
+    out = p.translate(["新句子"])
+
+    assert out == ["新句子_翻"]
+    assert tr.calls == [["新句子"]]
+    assert game_cache.get("新句子") == "新句子_翻"
+    assert global_cache.get("新句子") == "新句子_翻"
+
+    # 兩本都應各自存檔（重新載入也讀得到）
+    reloaded_game = DictCache(str(tmp_path / "game_dict.json"))
+    reloaded_global = DictCache(str(tmp_path / "global_dict.json"))
+    assert reloaded_game.get("新句子") == "新句子_翻"
+    assert reloaded_global.get("新句子") == "新句子_翻"
+
+
+def test_global_cache_none_keeps_existing_behavior(tmp_path):
+    # global_cache 預設 None 時，行為必須與加這個功能之前完全一致
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")  # 不傳 global_cache，維持預設 None
+    out = p.translate(["A", "B"])
+    assert out == ["A_翻", "B_翻"]
+    assert p.global_cache is None
+
+
 def test_missing_not_exceeding_batch_saves_once(tmp_path):
     # 未命中筆數未超過 BATCH 時，維持原本「翻完存一次」的行為（只是分批邏輯的邊界情況）
     cache = DictCache(str(tmp_path / "d.json"))

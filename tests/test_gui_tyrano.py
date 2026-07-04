@@ -88,6 +88,9 @@ def test_tyrano_on_start_runs_deploy_in_background_and_launches(tmp_path, monkey
     monkeypatch.setattr(app_module, "LocalTranslator",
                         lambda model: app_module.NullTranslator())
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    # 全域共用字典路徑導向 tmp_path，避免測試碰到使用者真實 home 目錄
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -128,6 +131,8 @@ def test_tyrano_on_start_reports_error_when_deploy_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app_module, "LocalTranslator",
                         lambda model: app_module.NullTranslator())
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -163,6 +168,8 @@ def test_tyrano_pipeline_gets_postprocess_when_traditional_checked(tmp_path, mon
     monkeypatch.setattr(app_module, "LocalTranslator",
                         lambda model: app_module.NullTranslator())
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")
@@ -197,6 +204,8 @@ def test_tyrano_pipeline_no_postprocess_when_traditional_unchecked(tmp_path, mon
     monkeypatch.setattr(app_module, "LocalTranslator",
                         lambda model: app_module.NullTranslator())
     monkeypatch.setattr(app_module, "launch_game", fake_launch)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
 
     win = app_module.MainWindow()
     win.exe_path = str(game_dir / "Game.exe")

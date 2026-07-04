@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from core.detector import detect, Detection
 from core.cache import DictCache
+from core.paths import global_dict_path
 from core.pipeline import Pipeline
 from core.postprocess import make_traditional_converter
 from core.server import TranslationServer
@@ -154,6 +155,12 @@ class MainWindow(QWidget):
         # s2twp 過一次簡轉繁（含台灣慣用語）。
         self.traditional_checkbox = QCheckBox("繁體中文（台灣用語）")
         self.traditional_checkbox.setChecked(True)
+        # 「使用全域共用字典（跨遊戲加速）」勾選框：預設勾選。勾選時 Pipeline 會
+        # 額外查詢/寫入 ~/.game_translator/global_dict.json，讓 A 遊戲翻過的常見句子
+        # （UI、常見用語、重複術語）在 B 遊戲直接命中、免再翻，越用越快；
+        # 沒勾選則完全不碰全域字典，行為與加這個功能之前一致。
+        self.global_dict_checkbox = QCheckBox("使用全域共用字典（跨遊戲加速）")
+        self.global_dict_checkbox.setChecked(True)
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
@@ -162,7 +169,7 @@ class MainWindow(QWidget):
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
                   self.model_edit, self.dict_btn, self.traditional_checkbox,
-                  self.start_btn, self.restore_btn):
+                  self.global_dict_checkbox, self.start_btn, self.restore_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
@@ -206,6 +213,9 @@ class MainWindow(QWidget):
         - postprocess：若勾選「繁體中文（台灣用語）」，套用 OpenCC s2twp 簡轉繁；
           否則為 None（維持原文，行為不變）。Tyrano 走 translate_tree（用這個
           Pipeline）會自動吃到 postprocess，不需另外處理。
+        - global_cache：若勾選「使用全域共用字典（跨遊戲加速）」，額外開啟
+          ~/.game_translator/global_dict.json 這本跨遊戲共用字典傳給 Pipeline；
+          沒勾選則傳 None，Pipeline 完全不碰全域字典（維持既有行為）。
         """
         cache_path = os.path.join(d.game_dir, "translator_dict.json")
         # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
@@ -216,6 +226,10 @@ class MainWindow(QWidget):
             if src != dst:
                 shutil.copyfile(src, dst)
         cache = DictCache(cache_path)
+
+        global_cache = (
+            DictCache(global_dict_path())
+            if self.global_dict_checkbox.isChecked() else None)
 
         if mode == "offline":
             translator = NullTranslator()
@@ -229,7 +243,7 @@ class MainWindow(QWidget):
             make_traditional_converter()
             if self.traditional_checkbox.isChecked() else None)
         return Pipeline(cache, translator, target_lang="ZH", source_lang="JA",
-                        postprocess=postprocess)
+                        postprocess=postprocess, global_cache=global_cache)
 
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
