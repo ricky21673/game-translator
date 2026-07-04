@@ -28,3 +28,19 @@ def test_loads_existing_mtool_dict(tmp_path):
     p = tmp_path / "dict.json"
     p.write_text(json.dumps({"戻る": "返回"}, ensure_ascii=False), encoding="utf-8")
     assert DictCache(str(p)).get("戻る") == "返回"
+
+
+def test_init_with_empty_file_falls_back_to_empty_dict(tmp_path):
+    # 測試：指向一個 0 byte 的空檔，建構不應崩潰，退回空字典
+    p = tmp_path / "empty.json"
+    p.write_text("", encoding="utf-8")
+    c = DictCache(str(p))
+    assert c.get("任何key") is None
+
+
+def test_init_with_corrupted_json_falls_back_to_empty_dict(tmp_path):
+    # 測試：指向內容為壞 JSON 的檔案，建構不應崩潰，退回空字典
+    p = tmp_path / "broken.json"
+    p.write_text("{ broken", encoding="utf-8")
+    c = DictCache(str(p))
+    assert c.get("任何key") is None

@@ -5,9 +5,15 @@
 (function () {
   "use strict";
 
-  var PORT = window.$TRANSLATOR_PORT || 0;
-  var ENDPOINT = "http://127.0.0.1:" + PORT + "/translate";
   var dict = Object.create(null); // 原文 -> 譯文
+
+  // 延後讀取 PORT／組 ENDPOINT：不在 IIFE 載入當下就讀，避免與 boot script
+  // 載入順序耦合（bridge 若比 boot 先執行，當下讀到的 window.$TRANSLATOR_PORT
+  // 可能尚未就緒）。改成每次要發請求時才即時讀取。
+  function getEndpoint() {
+    var port = window.$TRANSLATOR_PORT || 0;
+    return { port: port, url: "http://127.0.0.1:" + port + "/translate" };
+  }
 
   // --- 從 $dataXXX 抽可見字串（P1：抽對話事件文字與基本名稱）---
   function collectStrings() {
@@ -43,9 +49,10 @@
 
   // --- 送 localhost 大腦翻譯，回填記憶體字典 ---
   function requestTranslation(texts, done) {
-    if (!texts.length || !PORT) { done(); return; }
+    var ep = getEndpoint();
+    if (!texts.length || !ep.port) { done(); return; }
     var xhr = new XMLHttpRequest();
-    xhr.open("POST", ENDPOINT, true);
+    xhr.open("POST", ep.url, true);
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;

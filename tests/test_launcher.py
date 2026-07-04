@@ -1,4 +1,5 @@
 import os
+import pytest
 from launcher import deploy_mv_adapter
 
 def _mk_mv(tmp_path):
@@ -69,3 +70,16 @@ def test_deploy_appends_to_nonempty_plugins_with_brackets(tmp_path):
     assert "Existing_A" in text and "Existing_B" in text
     # 結構仍以 ]; 收尾
     assert text.rstrip().endswith("];")
+
+def test_deploy_raises_when_index_html_has_no_plugins_js_load_point(tmp_path):
+    # index.html 內沒有 js/plugins.js 的 script tag（例如只有別的 script），
+    # 找不到插入點時應明確 raise，而不是靜默 count=0、boot 沒被插入
+    www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
+    js.joinpath("plugins.js").write_text("var $plugins =\n[\n];\n", encoding="utf-8")
+    www.joinpath("index.html").write_text(
+        "<html><body><script type='text/javascript' src='js/other.js'></script></body></html>",
+        encoding="utf-8")
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        deploy_mv_adapter(str(www), 12345, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))

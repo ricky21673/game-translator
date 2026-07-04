@@ -10,8 +10,12 @@ class DictCache:
         self.path = path
         self._data: dict[str, str] = {}
         if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[警告] 字典檔無法解析，將以空字典開始: {path} ({e})")
+                self._data = {}
 
     def get(self, text: str) -> str | None:
         """查詢原文的譯文，不存在時回傳 None"""

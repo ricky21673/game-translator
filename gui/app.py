@@ -85,7 +85,8 @@ class MainWindow(QWidget):
             maps = []
             for mp in sorted(glob.glob(os.path.join(d.www_dir, "data", "Map*.json"))):
                 try:
-                    maps.append(json.load(open(mp, encoding="utf-8")))
+                    with open(mp, encoding="utf-8") as f:
+                        maps.append(json.load(f))
                 except (json.JSONDecodeError, OSError) as e:
                     print(f"[警告] 讀取地圖失敗 {mp}: {e}")
             key = self.key_edit.text().strip()

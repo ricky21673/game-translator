@@ -50,8 +50,11 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
     if "translator_boot.js" not in html:
         # 在 plugins.js 的 script tag 前插入 boot script
         tag = '<script type="text/javascript" src="js/translator_boot.js"></script>\n'
-        html = re.sub(r'(<script[^>]*src=["\']js/plugins\.js["\'][^>]*>)',
-                      tag + r"\1", html, count=1)
+        html, n = re.subn(r'(<script[^>]*src=["\']js/plugins\.js["\'][^>]*>)',
+                          tag + r"\1", html, count=1)
+        if n == 0:
+            raise RuntimeError(
+                "無法在 index.html 找到 js/plugins.js 的載入點，boot script 未能注入")
         with open(index, "w", encoding="utf-8") as f:
             f.write(html)
     return dst
