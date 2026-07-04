@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
+
+datas = [('adapters/mv/ZZ_Translator_Bridge.js', 'adapters/mv')]
+hiddenimports = []
+datas += collect_data_files('opencc')
+hiddenimports += collect_submodules('opencc')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('adapters/mv/ZZ_Translator_Bridge.js', 'adapters/mv')],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
