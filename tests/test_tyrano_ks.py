@@ -79,3 +79,52 @@ def test_extract_segments_handles_multiple_trailing_tags():
     text = "さようなら[l][r]\n"
     segments = extract_segments(text)
     assert segments == ["さようなら"]
+
+
+# --- 資料陣列型文字（回想/畫廊清單）支援 ---
+
+def test_extract_segments_data_array_extracts_japanese_strings():
+    # 資料陣列行 [編號,"標題","描述"]：抽出兩個含日文的引號字串
+    text = '[11,"標題日文ですます","説明の日本語テキスト"],\n'
+    segments = extract_segments(text)
+    assert "標題日文ですます" in segments
+    assert "説明の日本語テキスト" in segments
+    # 恰好兩個（編號 11 不是引號字串，不會被抽）
+    assert len(segments) == 2
+
+
+def test_apply_translations_data_array_replaces_only_quoted_content():
+    # 兩個引號內容各給中文譯文，替換後只換引號內容、保留 [11, 與結構
+    text = '[11,"標題日文ですます","説明の日本語テキスト"],\n'
+    mapping = {
+        "標題日文ですます": "中文標題",
+        "説明の日本語テキスト": "中文說明",
+    }
+    result = apply_translations(text, mapping)
+    assert result == '[11,"中文標題","中文說明"],\n'
+
+
+def test_data_array_line_does_not_touch_tag_line_identifier():
+    # tyrano 標籤行 [chara_part name="夢乃"]：不抽 name 值（識別字，翻了會壞遊戲）
+    text = '[chara_part name="夢乃"]\n'
+    segments = extract_segments(text)
+    assert "夢乃" not in segments
+    assert segments == []
+    # apply_translations 也不動它（就算 mapping 給了對應也不碰）
+    result = apply_translations(text, {"夢乃": "Yumeno"})
+    assert result == text
+
+
+def test_extract_segments_data_array_ascii_only_not_extracted():
+    # 純英數資料陣列行：無日文，不抽
+    text = '[1,"ok","start"]\n'
+    segments = extract_segments(text)
+    assert segments == []
+
+
+def test_apply_translations_data_array_keeps_non_japanese_and_unmapped():
+    # 一行含日文與英數混合：只換有對應譯文的日文引號，英數/未對應者原樣不動
+    text = '[3,"start","開始ですか"]\n'
+    mapping = {"開始ですか": "要開始嗎"}
+    result = apply_translations(text, mapping)
+    assert result == '[3,"start","要開始嗎"]\n'
