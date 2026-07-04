@@ -44,3 +44,14 @@ def test_init_with_corrupted_json_falls_back_to_empty_dict(tmp_path):
     p.write_text("{ broken", encoding="utf-8")
     c = DictCache(str(p))
     assert c.get("任何key") is None
+
+
+def test_as_dict_returns_copy_of_internal_data(tmp_path):
+    # 測試：as_dict() 回傳內部字典的複本，內容正確且修改回傳值不影響快取本身
+    p = tmp_path / "dict.json"
+    c = DictCache(str(p))
+    c.put("はい", "是")
+    snapshot = c.as_dict()
+    assert snapshot == {"はい": "是"}
+    snapshot["はい"] = "被竄改"
+    assert c.get("はい") == "是"  # 複本被改動不應影響原本內部資料

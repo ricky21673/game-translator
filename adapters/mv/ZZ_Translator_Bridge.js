@@ -1,11 +1,25 @@
 //=============================================================================
-// ZZ_Translator_Bridge.js  (P1)
+// ZZ_Translator_Bridge.js  (P2)
 // 由 game-translator 產生。遊戲自己載入，不做任何注入。
+//
+// P2 變更：新增「離線整字典模式」（MTool 式）。
+// 若部署時偵測到 window.$translatorDict（整份 {原文:譯文} 字典已嵌入遊戲端），
+// 就改走「hook 底層畫字函式 Bitmap.prototype.drawText」的全面覆蓋路線，
+// 不再需要開機時對 server 發 XHR 要譯文（字典已經在本地、不必再問大腦）。
+// 沒有 $translatorDict 時，維持原本「collectStrings + requestTranslation」的
+// DeepL 線上模式路徑，兩者用 if 分流、互不影響。
 //=============================================================================
 (function () {
   "use strict";
 
-  var dict = Object.create(null); // 原文（或正規化內文）-> 譯文
+  // 是否為離線整字典模式：window.$translatorDict 存在且為物件（非 null、非陣列亦可，
+  // 但實務上只會是 launcher 端 json.dumps 出的純物件）。
+  var hasFullDict = (typeof window.$translatorDict === "object" && window.$translatorDict !== null);
+
+  // dict：實際查表用的原文 -> 譯文字典。
+  // 離線整字典模式：直接沿用 window.$translatorDict（已含整份字典，開機不必再抽字串送翻）。
+  // 非整字典模式（DeepL 線上）：維持原本的空字典，靠 collectStrings/requestTranslation 動態回填。
+  var dict = hasFullDict ? window.$translatorDict : Object.create(null); // 原文（或正規化內文）-> 譯文
 
   // --- 正規化：剝除「說話者名條前綴」與「plugin 條件/script 前綴」---
   // 實測發現整串查表命中率偏低，是因為對話文字常帶固定格式的前綴：
@@ -40,15 +54,45 @@
     return { prefix: prefix, inner: inner };
   }
 
-  // 延後讀取 PORT／組 ENDPOINT：不在 IIFE 載入當下就讀，避免與 boot script
-  // 載入順序耦合（bridge 若比 boot 先執行，當下讀到的 window.$TRANSLATOR_PORT
-  // 可能尚未就緒）。改成每次要發請求時才即時讀取。
-  function getEndpoint() {
-    var port = window.$TRANSLATOR_PORT || 0;
-    return { port: port, url: "http://127.0.0.1:" + port + "/translate" };
+  // --- 查表快取（memo）---
+  // 只快取「確定命中」的查表結果（key -> 已翻譯字串），避免重複畫同一段文字時
+  // 反覆做 normalize 運算。務必不快取「未命中」，否則字典之後若被替換／擴充
+  // （理論上不會，但保守起見）不會被誤判成「原文即最終結果」而卡住。
+  // 未命中的情況一律即時回傳原文，不進 memo。
+  var memo = Object.create(null);
+
+  // --- lookup：統一查表入口，drawText 與 convertEscapeCharacters 都呼叫這支 ---
+  // 規則（依序）：
+  //   1. 非字串或空字串 → 原樣回傳（安全處理 drawText 可能傳數字等非字串參數）。
+  //   2. memo 命中 → 直接回傳快取結果。
+  //   3. 整串 dict[text] 命中且譯文 !== 原文 → 回傳譯文，存入 memo。
+  //   4. 未命中 → normalize 剝前綴取 inner，dict[inner] 命中且譯文 !== inner
+  //      → 回傳 prefix + dict[inner]，存入 memo。
+  //   5. 都沒中 → 回傳原文（不存 memo，避免誤把原文當成已翻結果快取住）。
+  function lookup(text) {
+    if (typeof text !== "string" || !text) return text;
+    if (memo[text] !== undefined) return memo[text];
+
+    var result = text;
+    try {
+      if (dict[text] && dict[text] !== text) {
+        result = dict[text];
+      } else {
+        var norm = normalize(text);
+        if (norm.inner && dict[norm.inner] && dict[norm.inner] !== norm.inner) {
+          result = norm.prefix + dict[norm.inner];
+        }
+      }
+    } catch (e) {
+      console.warn("[Translator_Bridge] 查表失敗，維持原文:", e);
+      result = text;
+    }
+
+    if (result !== text) memo[text] = result; // 只快取確定命中的結果
+    return result;
   }
 
-  // --- 從 $dataXXX 抽可見字串（P1：抽對話事件文字與基本名稱）---
+  // --- 從 $dataXXX 抽可見字串（非整字典模式專用：P1 抽對話事件文字與基本名稱送 DeepL）---
   function collectStrings() {
     var set = Object.create(null);
     function add(s) {
@@ -89,7 +133,15 @@
     return Object.keys(set);
   }
 
-  // --- 送 localhost 大腦翻譯，回填記憶體字典 ---
+  // 延後讀取 PORT／組 ENDPOINT：不在 IIFE 載入當下就讀，避免與 boot script
+  // 載入順序耦合（bridge 若比 boot 先執行，當下讀到的 window.$TRANSLATOR_PORT
+  // 可能尚未就緒）。改成每次要發請求時才即時讀取。
+  function getEndpoint() {
+    var port = window.$TRANSLATOR_PORT || 0;
+    return { port: port, url: "http://127.0.0.1:" + port + "/translate" };
+  }
+
+  // --- 送 localhost 大腦翻譯，回填記憶體字典（非整字典模式專用：DeepL 線上）---
   function requestTranslation(texts, done) {
     var ep = getEndpoint();
     if (!texts.length || !ep.port) { done(); return; }
@@ -111,31 +163,47 @@
     xhr.send(JSON.stringify({ texts: texts }));
   }
 
-  // --- hook：先試整串查表；未命中則正規化剝前綴後、用內文查表命中，保留原前綴 ---
-  var _conv = Window_Base.prototype.convertEscapeCharacters;
-  Window_Base.prototype.convertEscapeCharacters = function (text) {
+  // --- hook 1：底層畫字函式（主要的全面覆蓋點）---
+  // RPG Maker MV 選單、道具、狀態欄等大量文字最終都經由 Bitmap.prototype.drawText 畫出，
+  // 不會經過 convertEscapeCharacters；hook 這裡才能涵蓋訊息文字以外的介面文字。
+  // text 可能非字串（例如數字血量、座標等），lookup() 內已對非字串安全直接回傳原值。
+  var _drawText = Bitmap.prototype.drawText;
+  Bitmap.prototype.drawText = function (text, x, y, maxWidth, lineHeight, align) {
+    var translated = text;
     try {
-      if (typeof text === "string") {
-        if (dict[text] && dict[text] !== text) {
-          text = dict[text];
-        } else {
-          var norm = normalize(text);
-          if (norm.inner && dict[norm.inner] && dict[norm.inner] !== norm.inner) {
-            text = norm.prefix + dict[norm.inner];
-          }
-        }
-      }
-    } catch (e) { console.warn("[Translator_Bridge] 查表替換失敗，維持原文:", e); }
-    return _conv.call(this, text);
+      translated = lookup(text);
+    } catch (e) {
+      console.warn("[Translator_Bridge] drawText 查表替換失敗，維持原文:", e);
+      translated = text;
+    }
+    return _drawText.call(this, translated, x, y, maxWidth, lineHeight, align);
   };
 
-  // --- 開機流程：資料載完 → 抽字串 → 翻譯 ---
-  var _onLoad = Scene_Boot.prototype.start;
-  Scene_Boot.prototype.start = function () {
+  // --- hook 2：訊息文字轉義字元處理（涵蓋對話視窗文字，保留既有行為）---
+  var _conv = Window_Base.prototype.convertEscapeCharacters;
+  Window_Base.prototype.convertEscapeCharacters = function (text) {
+    var translated = text;
     try {
-      var texts = collectStrings();
-      requestTranslation(texts, function () {});
-    } catch (e) { console.warn("[Translator_Bridge] 開機抽字串/翻譯失敗:", e); }
-    _onLoad.call(this);
+      translated = lookup(text);
+    } catch (e) {
+      console.warn("[Translator_Bridge] convertEscapeCharacters 查表替換失敗，維持原文:", e);
+      translated = text;
+    }
+    return _conv.call(this, translated);
   };
+
+  // --- 開機流程 ---
+  // 離線整字典模式：字典已在本地（window.$translatorDict），不需要再對 server 發請求要譯文，
+  // 靠 hook 1/2 在畫字當下即時查表即可，故略過 collectStrings/requestTranslation。
+  // 非整字典模式（DeepL 線上）：維持原有「資料載完 → 抽字串 → 送翻」流程，不受本次修改影響。
+  if (!hasFullDict) {
+    var _onLoad = Scene_Boot.prototype.start;
+    Scene_Boot.prototype.start = function () {
+      try {
+        var texts = collectStrings();
+        requestTranslation(texts, function () {});
+      } catch (e) { console.warn("[Translator_Bridge] 開機抽字串/翻譯失敗:", e); }
+      _onLoad.call(this);
+    };
+  }
 })();

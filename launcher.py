@@ -22,11 +22,16 @@ def _backup_if_missing(path: str) -> None:
 
 
 def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
-                      bridge_src: str) -> str:
+                      bridge_src: str, offline_dict: dict | None = None) -> str:
     """
     部署 MV adapter 到遊戲資料夾。
-    流程：複製 bridge → 寫 boot 檔 → 在 plugins.js 末端註冊 → 修改 index.html 引入 boot。
+    流程：複製 bridge → （離線模式）寫整份字典檔 → 寫 boot 檔 → 在 plugins.js 末端註冊
+         → 修改 index.html 引入 dict_data／boot。
     可重入：重複呼叫不會重複註冊 plugin。
+
+    offline_dict：離線字典模式用，傳入整份 {原文:譯文} dict 時，會多寫一個
+    js/translator_dict_data.js 檔，內容為 window.$translatorDict = <該 dict>；
+    傳 None（預設）則不寫此檔，維持既有 DeepL 線上模式行為不變。
     """
     js_dir = os.path.join(www_dir, "js")
     plugins_dir = os.path.join(js_dir, "plugins")
@@ -35,6 +40,13 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
     # 1) 複製 bridge 到目標位置
     dst = os.path.join(plugins_dir, _PLUGIN_NAME + ".js")
     shutil.copyfile(bridge_src, dst)
+
+    # 1.5) 離線整字典模式：寫整份字典檔，供 bridge 開機時直接讀取 window.$translatorDict
+    dict_data_path = os.path.join(js_dir, "translator_dict_data.js")
+    if offline_dict is not None:
+        with open(dict_data_path, "w", encoding="utf-8") as f:
+            f.write("window.$translatorDict = %s;\n"
+                    % json.dumps(offline_dict, ensure_ascii=False))
 
     # 2) 寫 boot 檔（設定 port 與地圖資料）
     boot_path = os.path.join(js_dir, "translator_boot.js")
@@ -60,14 +72,18 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         with open(plugins_js, "w", encoding="utf-8") as f:
             f.write(text)
 
-    # 4) 確保 index.html 於載入 plugins.js 前引入 boot（可重入：檢查是否已引入）
+    # 4) 確保 index.html 於載入 plugins.js 前引入 dict_data（若有）與 boot（可重入：檢查是否已引入）
     index = os.path.join(www_dir, "index.html")
     # 修改前先備份原始檔（僅第一次部署會真的複製，之後保留最初版本）
     _backup_if_missing(index)
     html = open(index, encoding="utf-8").read()
     if "translator_boot.js" not in html:
-        # 在 plugins.js 的 script tag 前插入 boot script
-        tag = '<script type="text/javascript" src="js/translator_boot.js"></script>\n'
+        # 兩者皆須排在 plugins.js 之前；dict_data 在前、boot 在後（boot 內容不依賴
+        # dict_data 是否存在，順序僅需同一批插在 plugins.js 前即可）。
+        tag = ""
+        if offline_dict is not None:
+            tag += '<script type="text/javascript" src="js/translator_dict_data.js"></script>\n'
+        tag += '<script type="text/javascript" src="js/translator_boot.js"></script>\n'
         html, n = re.subn(r'(<script[^>]*src=["\']js/plugins\.js["\'][^>]*>)',
                           tag + r"\1", html, count=1)
         if n == 0:

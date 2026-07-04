@@ -30,3 +30,7 @@ class DictCache:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
+
+    def as_dict(self) -> dict[str, str]:
+        """回傳內部字典的複本（給離線整字典模式嵌入遊戲端用，避免外部持有內部參考被意外修改）"""
+        return dict(self._data)

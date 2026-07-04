@@ -165,7 +165,11 @@ class MainWindow(QWidget):
             port = self.server.start()
             bridge = os.path.join(os.path.dirname(__file__), "..",
                                   "adapters", "mv", "ZZ_Translator_Bridge.js")
-            deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge))
+            # 離線模式：把整份字典嵌入遊戲端（MTool 式），供底層畫字 hook 即時查表；
+            # DeepL 線上模式維持 None，走既有 server/collectStrings 路徑，不受影響。
+            offline_dict = cache.as_dict() if mode == "offline" else None
+            deploy_mv_adapter(d.www_dir, port, maps, bridge_src=os.path.abspath(bridge),
+                              offline_dict=offline_dict)
             launch_game(self.exe_path)
             if mode == "offline":
                 self.info.setText("已啟動（離線字典模式），翻譯服務執行中…")

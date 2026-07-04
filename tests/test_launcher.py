@@ -160,3 +160,47 @@ def test_restore_without_prior_deploy_does_not_raise(tmp_path):
     # 從未部署過（無 .trbak）的 www 呼叫 restore 應優雅略過，不拋例外
     www = _mk_mv(tmp_path)
     restore_mv_adapter(www)  # 不應拋例外
+
+
+# ---------------------------------------------------------------------------
+# offline_dict（整份字典嵌入）相關測試
+# ---------------------------------------------------------------------------
+
+def test_deploy_with_offline_dict_writes_dict_data_file(tmp_path):
+    # 傳入 offline_dict 時，應多寫 js/translator_dict_data.js，內容含該字典資料
+    www = _mk_mv(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    offline_dict = {"はい": "是", "いいえ": "否"}
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"),
+                       offline_dict=offline_dict)
+    dict_data_path = os.path.join(www, "js", "translator_dict_data.js")
+    assert os.path.isfile(dict_data_path)
+    content = open(dict_data_path, encoding="utf-8").read()
+    assert "window.$translatorDict" in content
+    assert "はい" in content and "是" in content
+    assert "いいえ" in content and "否" in content
+
+
+def test_deploy_with_offline_dict_orders_dict_data_before_plugins_js(tmp_path):
+    # index.html 中 translator_dict_data.js 與 translator_boot.js 都須排在 plugins.js 之前
+    www = _mk_mv(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"),
+                       offline_dict={"はい": "是"})
+    html = open(os.path.join(www, "index.html"), encoding="utf-8").read()
+    assert html.index("translator_dict_data.js") < html.index("plugins.js")
+    assert html.index("translator_boot.js") < html.index("plugins.js")
+
+
+def test_deploy_without_offline_dict_does_not_write_dict_data_file(tmp_path):
+    # 未傳 offline_dict（None，預設）時，不應產生 translator_dict_data.js，維持既有行為
+    www = _mk_mv(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+    dict_data_path = os.path.join(www, "js", "translator_dict_data.js")
+    assert not os.path.isfile(dict_data_path)
+    html = open(os.path.join(www, "index.html"), encoding="utf-8").read()
+    assert "translator_dict_data.js" not in html
