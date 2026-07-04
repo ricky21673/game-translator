@@ -144,6 +144,74 @@ def test_tyrano_on_start_reports_error_when_deploy_fails(tmp_path, monkeypatch):
     assert win.start_btn.isEnabled() is True
 
 
+def test_tyrano_pipeline_gets_postprocess_when_traditional_checked(tmp_path, monkeypatch):
+    # tyrano 走 translate_tree（用 Pipeline），勾選繁體時 Pipeline 應帶 postprocess，
+    # 讓每句譯文自動被簡轉繁（不需另外處理，交由 Pipeline.translate 內部套用）
+    game_dir = _mk_tyrano_game(tmp_path)
+
+    captured = {}
+
+    class SpyPipeline(app_module.Pipeline):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            captured["postprocess"] = self.postprocess
+
+    def fake_launch(exe_path):
+        return None
+
+    monkeypatch.setattr(app_module, "Pipeline", SpyPipeline)
+    monkeypatch.setattr(app_module, "LocalTranslator",
+                        lambda model: app_module.NullTranslator())
+    monkeypatch.setattr(app_module, "launch_game", fake_launch)
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("tyrano", game_dir=str(game_dir))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.engine_box.setCurrentText("本地 Ollama")
+    win.traditional_checkbox.setChecked(True)
+
+    win.on_start()
+    _run_event_loop_until(lambda: win._tyrano_thread is None)
+
+    assert captured["postprocess"] is not None
+    assert captured["postprocess"]("软件") == "軟體"
+
+
+def test_tyrano_pipeline_no_postprocess_when_traditional_unchecked(tmp_path, monkeypatch):
+    # 未勾選繁體時，Pipeline.postprocess 應維持 None（現況不變）
+    game_dir = _mk_tyrano_game(tmp_path)
+
+    captured = {}
+
+    class SpyPipeline(app_module.Pipeline):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            captured["postprocess"] = self.postprocess
+
+    def fake_launch(exe_path):
+        return None
+
+    monkeypatch.setattr(app_module, "Pipeline", SpyPipeline)
+    monkeypatch.setattr(app_module, "LocalTranslator",
+                        lambda model: app_module.NullTranslator())
+    monkeypatch.setattr(app_module, "launch_game", fake_launch)
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("tyrano", game_dir=str(game_dir))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.engine_box.setCurrentText("本地 Ollama")
+    win.traditional_checkbox.setChecked(False)
+
+    win.on_start()
+    _run_event_loop_until(lambda: win._tyrano_thread is None)
+
+    assert captured["postprocess"] is None
+
+
 def test_tyrano_on_restore_calls_restore_tyrano(tmp_path, monkeypatch):
     # tyrano 的還原應呼叫 restore_tyrano(game_dir)，而不是 restore_mv_adapter
     game_dir = _mk_tyrano_game(tmp_path)

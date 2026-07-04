@@ -61,3 +61,23 @@ def test_all_cached_no_engine_call_and_no_save(tmp_path):
     assert out == ["X譯", "Y譯", "Z譯"]
     assert tr.calls == []  # 引擎完全沒被呼叫
     assert save_count[0] == 0  # save 完全沒被呼叫
+
+def test_postprocess_applied_to_cache_hit_and_engine_output(tmp_path):
+    # postprocess 應套用在「每一個輸出字串」，不論來自快取命中或引擎新翻，
+    # 且不影響順序與長度
+    cache = DictCache(str(tmp_path / "d.json"))
+    cache.put("A", "已有")
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH", postprocess=lambda s: s + "X")
+    out = p.translate(["A", "B", "A"])
+    assert out == ["已有X", "B_翻X", "已有X"]
+    assert len(out) == 3
+    assert tr.calls == [["B"]]  # 只送未命中的 B，postprocess 不影響去重邏輯
+
+def test_postprocess_none_keeps_existing_behavior(tmp_path):
+    # postprocess 預設為 None 時，行為必須與現況完全一致
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+    out = p.translate(["A", "B"])
+    assert out == ["A_翻", "B_翻"]

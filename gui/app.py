@@ -15,12 +15,13 @@ import sys
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
-    QVBoxLayout, QFileDialog,
+    QVBoxLayout, QFileDialog, QCheckBox,
 )
 
 from core.detector import detect, Detection
 from core.cache import DictCache
 from core.pipeline import Pipeline
+from core.postprocess import make_traditional_converter
 from core.server import TranslationServer
 from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
@@ -148,6 +149,11 @@ class MainWindow(QWidget):
         self.model_edit.setText(DEFAULT_LOCAL_MODEL)
         self.model_edit.setPlaceholderText("本地 Ollama 模型名稱")
         self.dict_btn = QPushButton("選擇既有字典 JSON（離線，可不填 key）")
+        # 「繁體中文（台灣用語）」勾選框：預設勾選（使用者要繁體）。翻譯來源
+        # （現成字典、DeepL、本地 Ollama）多半輸出簡體，勾選後統一用 OpenCC
+        # s2twp 過一次簡轉繁（含台灣慣用語）。
+        self.traditional_checkbox = QCheckBox("繁體中文（台灣用語）")
+        self.traditional_checkbox.setChecked(True)
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
@@ -155,7 +161,8 @@ class MainWindow(QWidget):
 
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
-                  self.model_edit, self.dict_btn, self.start_btn, self.restore_btn):
+                  self.model_edit, self.dict_btn, self.traditional_checkbox,
+                  self.start_btn, self.restore_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
@@ -196,6 +203,9 @@ class MainWindow(QWidget):
         - cache 來自使用者選的字典 JSON（若有，複製成該遊戲專屬的工作快取）
         - translator 依 mode：offline → NullTranslator、local → LocalTranslator、
           其餘（deepl）→ DeepLTranslator
+        - postprocess：若勾選「繁體中文（台灣用語）」，套用 OpenCC s2twp 簡轉繁；
+          否則為 None（維持原文，行為不變）。Tyrano 走 translate_tree（用這個
+          Pipeline）會自動吃到 postprocess，不需另外處理。
         """
         cache_path = os.path.join(d.game_dir, "translator_dict.json")
         # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
@@ -214,7 +224,12 @@ class MainWindow(QWidget):
             translator = LocalTranslator(model=model)
         else:
             translator = DeepLTranslator(key, free=True)
-        return Pipeline(cache, translator, target_lang="ZH", source_lang="JA")
+
+        postprocess = (
+            make_traditional_converter()
+            if self.traditional_checkbox.isChecked() else None)
+        return Pipeline(cache, translator, target_lang="ZH", source_lang="JA",
+                        postprocess=postprocess)
 
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
@@ -262,6 +277,12 @@ class MainWindow(QWidget):
             # DeepL 與本地 Ollama 皆維持 None，走既有 server/collectStrings 線上路徑，
             # 逐句翻並快取到 translator_dict.json，不受影響。
             offline_dict = cache.as_dict() if mode == "offline" else None
+            # 離線整字典嵌入是直接把字典嵌進遊戲 JS、執行期不經 Pipeline，
+            # 所以若勾選繁體，要在傳給 deploy_mv_adapter 前，把 offline_dict
+            # 的「每個值」也用同一個轉換器轉一次（鍵＝原文保持不動，只轉值＝譯文）。
+            if offline_dict is not None and self.traditional_checkbox.isChecked():
+                convert = make_traditional_converter()
+                offline_dict = {k: convert(v) for k, v in offline_dict.items()}
             deploy_mv_adapter(d.web_dir, port, maps, bridge_src=os.path.abspath(bridge),
                               offline_dict=offline_dict)
             launch_game(self.exe_path)
