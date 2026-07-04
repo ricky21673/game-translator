@@ -33,7 +33,9 @@ def detect(exe_path: str) -> Detection:
     - MV: 透過檢查 rpg_core.js 檔案（在 www/js 或根 js 目錄）
     - MZ: 透過檢查 rmmz_core.js 檔案（在 www/js 或根 js 目錄）
     - Unity: 透過檢查 UnityPlayer.dll 或 *_Data 目錄
-    - TyranoScript（Electron 打包）: 透過 resources/app.asar 內是否含 .ks 檔或路徑含 "tyrano"
+    - TyranoScript（Electron 打包，未部署）: 透過 resources/app.asar 內是否含 .ks 檔或路徑含 "tyrano"
+    - TyranoScript（Electron 打包，已被本工具部署過）: 透過 resources/app.asar.trbak 備份存在，
+      或 resources/app/ 解包資料夾內找得到 .ks 檔
     - TyranoScript（未打包）: 透過檢查 data/scenario 目錄
     - 未知: 無法識別時回傳此項
 
@@ -65,8 +67,11 @@ def detect(exe_path: str) -> Detection:
             if name.endswith("_Data") and os.path.isdir(os.path.join(game_dir, name)):
                 return Detection("unity", game_dir)
 
-    # TyranoScript（Electron 打包）：resources/app.asar 內含 .ks 檔或路徑含 "tyrano"
-    asar_path = os.path.join(game_dir, "resources", "app.asar")
+    # TyranoScript（Electron 打包）：涵蓋「未部署」與「已被本工具部署過」兩種狀態。
+    resources_dir = os.path.join(game_dir, "resources")
+
+    # (1) 未部署：resources/app.asar 內含 .ks 檔或路徑含 "tyrano"
+    asar_path = os.path.join(resources_dir, "app.asar")
     if os.path.isfile(asar_path):
         try:
             header, _base, _data = read_asar_header(asar_path)
@@ -79,6 +84,23 @@ def detect(exe_path: str) -> Detection:
                 lower = rel_path.lower()
                 if lower.endswith(".ks") or "tyrano" in lower:
                     return Detection("tyrano", game_dir)
+
+    # (2) 已被本工具部署過：部署時會把 app.asar 改名成 app.asar.trbak 並解包成 resources/app/。
+    #     任一跡象成立即判 tyrano。全程容錯，失敗就不誤判、往下走原本流程。
+    try:
+        # (2a) 備份檔存在，代表這是我們處理過的 Tyrano
+        if os.path.isfile(os.path.join(resources_dir, "app.asar.trbak")):
+            return Detection("tyrano", game_dir)
+
+        # (2b) 解包出的 resources/app/ 資料夾內找得到任一 .ks 檔（找到第一個即可，不必全掃）
+        app_dir = os.path.join(resources_dir, "app")
+        if os.path.isdir(app_dir):
+            for _root, _dirs, filenames in os.walk(app_dir):
+                if any(fn.lower().endswith(".ks") for fn in filenames):
+                    return Detection("tyrano", game_dir)
+    except Exception:
+        # 檢查過程出錯就不誤判為 tyrano，往下走原本流程
+        pass
 
     # TyranoScript（未打包，直接解壓）
     if os.path.isdir(os.path.join(game_dir, "data", "scenario")):

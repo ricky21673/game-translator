@@ -122,3 +122,41 @@ def test_corrupt_asar_does_not_crash_detect(tmp_path):
     d = detect(str(game / "Game.exe"))
 
     assert d.engine == "unknown"
+
+
+def test_detects_tyrano_via_deployed_trbak_backup(tmp_path):
+    # 驗證已被本工具部署過（app.asar 被改名為 app.asar.trbak）時判定為 tyrano
+    game = tmp_path / "game"
+    resources = game / "resources"
+    os.makedirs(str(resources))
+    # 部署後 app.asar 不存在，只留備份檔
+    (resources / "app.asar.trbak").write_bytes(b"backup of original asar")
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "tyrano"
+    assert d.game_dir == str(game)
+
+
+def test_detects_tyrano_via_deployed_unpacked_app_dir(tmp_path):
+    # 驗證已部署且解包成 resources/app/ 資料夾（內含 .ks，無 app.asar、無 .trbak）時判定為 tyrano
+    game = tmp_path / "game"
+    _touch(str(game / "resources" / "app" / "data" / "scenario" / "first.ks"))
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "tyrano"
+    assert d.game_dir == str(game)
+
+
+def test_empty_resources_dir_not_detected_as_tyrano(tmp_path):
+    # 驗證只有空的 resources/ 資料夾、無任何 tyrano 跡象時，不誤判為 tyrano
+    game = tmp_path / "game"
+    os.makedirs(str(game / "resources"))
+    _touch(str(game / "Game.exe"))
+
+    d = detect(str(game / "Game.exe"))
+
+    assert d.engine == "unknown"
