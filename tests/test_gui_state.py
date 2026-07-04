@@ -125,3 +125,16 @@ def test_visible_fields_local_shows_dict_and_model():
 def test_visible_fields_unknown_shows_nothing():
     # 未知引擎值保守起見全部隱藏，避免顯示不相關欄位
     assert visible_fields("unknown") == set()
+
+
+def test_should_pretranslate_mz():
+    from gui.app import should_pretranslate_mz
+    from core.detector import Detection
+
+    enc = Detection("mz", "/g", None, "/g/js", "/g", encrypted=True)
+    plain = Detection("mz", "/g", None, "/g/js", "/g", encrypted=False)
+
+    assert should_pretranslate_mz(enc, "local") is True
+    assert should_pretranslate_mz(enc, "deepl") is True
+    assert should_pretranslate_mz(enc, "offline") is False   # 無引擎，不預翻
+    assert should_pretranslate_mz(plain, "local") is False    # 未加密，走既有路徑

@@ -133,6 +133,13 @@ def choose_translator_mode(engine: str, dict_path: str | None, key: str) -> str:
     return "none"
 
 
+def should_pretranslate_mz(detection, mode: str) -> bool:
+    """加密 MZ 且選了會翻譯的引擎（local/deepl）時，需先批次預翻建字典。"""
+    return (getattr(detection, "encrypted", False)
+            and detection.engine == "mz"
+            and mode in ("local", "deepl"))
+
+
 class TyranoDeployWorker(QObject):
     """
     背景執行緒工作者：在非主執行緒跑「耗時」的 Tyrano 批次預翻部署（deploy_tyrano），
@@ -165,6 +172,34 @@ class TyranoDeployWorker(QObject):
             self.error.emit(str(e))
             return
         self.finished.emit(stats)
+
+
+class EncryptedMzWorker(QObject):
+    """
+    背景執行緒工作者：加密 MZ 的批次預翻（pretranslate_encrypted_mz），比照
+    TyranoDeployWorker 的設計（QObject + moveToThread，signal 送回主執行緒）。
+    - segment_progress(done, total)：轉呼 pretranslate_encrypted_mz 的 progress_cb
+    - finished(offline_dict)：預翻完成後的完整離線字典
+    - error(message)：例外訊息（字串化）
+    """
+    finished = Signal(dict)          # 回傳完整 offline_dict
+    error = Signal(str)
+    segment_progress = Signal(int, int)
+
+    def __init__(self, web_dir: str, pipeline):
+        super().__init__()
+        self.web_dir = web_dir
+        self.pipeline = pipeline
+
+    def run(self):
+        try:
+            from adapters.mz.pretranslate import pretranslate_encrypted_mz
+            result = pretranslate_encrypted_mz(
+                self.web_dir, self.pipeline,
+                progress_cb=lambda done, total: self.segment_progress.emit(done, total))
+            self.finished.emit(result)
+        except Exception as e:  # noqa: BLE001 — 背景執行緒需吞例外轉成 error signal
+            self.error.emit(str(e))
 
 
 class MainWindow(QWidget):
@@ -436,6 +471,14 @@ class MainWindow(QWidget):
                     print(f"[警告] 讀取地圖失敗 {mp}: {e}")
 
             pipe = self._build_pipeline(d, mode, key)
+
+            # 加密 MZ 且引擎會翻譯（local/deepl）：離線字典要靠引擎預翻填出，
+            # 改走背景批次預翻 worker → 監控面板 → 完成後離線嵌入 + 啟動，
+            # 不再走下面的即時 server 路徑。
+            if should_pretranslate_mz(d, mode):
+                self._on_start_encrypted_mz(d, pipe)
+                return
+
             cache = pipe.cache
 
             # 重複點開始不疊加多個 server：起新 server 前先關掉舊的
@@ -546,6 +589,51 @@ class MainWindow(QWidget):
         self.start_btn.setEnabled(can_start(self.detection))
         self._tyrano_thread = None
         self._tyrano_worker = None
+
+    def _on_start_encrypted_mz(self, d, pipe):
+        # 加密 MZ：背景預翻 → 完成後離線嵌入 + 啟動。比照 Tyrano 的執行緒收尾
+        # （worker.finished/error → thread.quit → thread.finished → 才釋放參照，
+        # 避免仍在運行中的 QThread 被 Python GC 提前回收導致卡死）。
+        from core.translators.protect import ControlCodeTranslator
+        pipe.translator = ControlCodeTranslator(pipe.translator)
+
+        self.start_btn.setEnabled(False)
+        self.info.setText("翻譯中（加密 MZ）：解密與預翻…")
+        self.monitor.reset()
+
+        thread = QThread()
+        worker = EncryptedMzWorker(d.web_dir, pipe)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.segment_progress.connect(self.monitor.set_progress)
+        worker.finished.connect(lambda dic: self._on_encrypted_mz_finished(d, dic))
+        worker.error.connect(self._on_tyrano_error)   # 復用既有錯誤顯示
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(self._on_tyrano_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._tyrano_thread = thread
+        self._tyrano_worker = worker
+        thread.start()
+
+    def _on_encrypted_mz_finished(self, d, offline_dict):
+        try:
+            if self.traditional_checkbox.isChecked():
+                convert = make_traditional_converter()
+                offline_dict = {k: convert(v) for k, v in offline_dict.items()}
+            port = self.server.port if self.server else 0
+            bridge = resource_path(os.path.join("adapters", "mv", "ZZ_Translator_Bridge.js"))
+            deploy_mv_adapter(d.web_dir, port, [], bridge_src=os.path.abspath(bridge),
+                              offline_dict=offline_dict)
+            if self.auto_launch_checkbox.isChecked():
+                launch_game(self.exe_path)
+                self.info.setText("已啟動（加密 MZ 離線字典模式）")
+            else:
+                self.info.setText("已部署（加密 MZ），未啟動")
+        except Exception as e:
+            self.info.setText(f"部署失敗：{e}")
+        finally:
+            self.start_btn.setEnabled(True)
 
     def on_restore(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能還原（邏輯層生效，不只靠 UI 的 setEnabled）
