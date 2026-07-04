@@ -11,7 +11,8 @@ BATCH = 50
 class Pipeline:
     def __init__(self, cache: DictCache, translator: Translator,
                  target_lang: str, source_lang: str | None = None,
-                 postprocess=None, global_cache: DictCache | None = None):
+                 postprocess=None, global_cache: DictCache | None = None,
+                 store_converted: bool = False):
         # 初始化管線：快取、翻譯引擎、目標語言、來源語言（可選項）、
         # 後處理函式（可選項，callable(str) -> str，例如簡轉繁；預設 None 表示不處理，
         # 完全維持既有行為）
@@ -23,6 +24,16 @@ class Pipeline:
         # 全域共用字典（可選項）：跨所有遊戲累積的翻譯快取。預設 None 時，
         # 查詢與寫回都只碰 self.cache，行為與加這個功能之前完全一致。
         self.global_cache = global_cache
+        # store_converted：只在「有 postprocess（例如開了繁體）」時才有意義，
+        # 決定「引擎新翻的條目」寫進 cache/global_cache 時要存哪種內容：
+        # - False（預設）：原樣（通常是簡體）寫進去，維持現況——JSON 存簡體，
+        #   輸出時再由既有 postprocess 邏輯轉繁。
+        # - True：先套用 postprocess（轉繁）再寫進去，JSON 裡就是繁體；
+        #   輸出時仍會再套一次 postprocess，但 s2twp 對已是繁體的文字近乎無變化
+        #   （等冪），故安全、不會壞。
+        # 注意：這個開關只影響「引擎新翻的條目」，既有種子字典載入的舊條目不會被
+        # 回頭轉換，維持原樣——想要整份 JSON 全繁體，需從 0 翻或改用繁體種子字典。
+        self.store_converted = store_converted
 
     def _lookup(self, t: str) -> str | None:
         # 分層查詢：遊戲私有字典（self.cache）優先，命中就直接回傳；
@@ -55,9 +66,15 @@ class Pipeline:
                 translated = self.translator.translate(
                     batch, self.target_lang, self.source_lang)
                 for src, dst in zip(batch, translated):
-                    self.cache.put(src, dst)
+                    # 只有「開了 postprocess 且 store_converted=True」時，才把
+                    # 轉換後（例如已轉繁）的內容寫進 cache/global_cache；
+                    # 否則維持原樣（dst，通常是簡體）寫入，行為與現況一致。
+                    to_store = (
+                        self.postprocess(dst)
+                        if (self.store_converted and self.postprocess) else dst)
+                    self.cache.put(src, to_store)
                     if self.global_cache is not None:
-                        self.global_cache.put(src, dst)
+                        self.global_cache.put(src, to_store)
                 self.cache.save()
                 if self.global_cache is not None:
                     self.global_cache.save()

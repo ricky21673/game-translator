@@ -79,6 +79,53 @@ def test_global_dict_checkbox_default_checked():
     assert win.global_dict_checkbox.isChecked() is True
 
 
+def test_store_converted_checkbox_default_unchecked():
+    # 「翻譯 JSON 存繁體」勾選框預設應為未勾選（預設存簡體，較通用）
+    win = app_module.MainWindow()
+    assert win.store_converted_checkbox.isChecked() is False
+
+
+def test_store_converted_checkbox_checked_passes_true_to_pipeline(tmp_path, monkeypatch):
+    # 勾選「翻譯 JSON 存繁體」時，_build_pipeline 應把 store_converted=True 傳給 Pipeline
+    game_dir, www = _mk_mv_game(tmp_path)
+
+    monkeypatch.setattr(app_module, "launch_game", lambda exe_path: None)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.store_converted_checkbox.setChecked(True)
+
+    pipe = win._build_pipeline(win.detection, "offline", "")
+
+    assert pipe.store_converted is True
+
+
+def test_store_converted_checkbox_unchecked_passes_false_to_pipeline(tmp_path, monkeypatch):
+    # 未勾選「翻譯 JSON 存繁體」時，_build_pipeline 應把 store_converted=False 傳給
+    # Pipeline（維持預設「存簡體」行為）
+    game_dir, www = _mk_mv_game(tmp_path)
+
+    monkeypatch.setattr(app_module, "launch_game", lambda exe_path: None)
+    monkeypatch.setattr(app_module, "global_dict_path",
+                        lambda: str(tmp_path / "global_dict.json"))
+
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
+    win.dict_path = None
+    win.key_edit.setText("")
+    win.store_converted_checkbox.setChecked(False)
+
+    pipe = win._build_pipeline(win.detection, "offline", "")
+
+    assert pipe.store_converted is False
+
+
 def test_global_dict_checked_passes_global_cache_to_pipeline(tmp_path, monkeypatch):
     # 勾選全域共用字典時，_build_pipeline 應把 DictCache(global_dict_path()) 傳給 Pipeline
     game_dir, www = _mk_mv_game(tmp_path)

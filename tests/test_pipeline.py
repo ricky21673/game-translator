@@ -190,6 +190,56 @@ def test_global_cache_none_keeps_existing_behavior(tmp_path):
     assert p.global_cache is None
 
 
+def test_store_converted_true_writes_converted_value_to_cache(tmp_path):
+    # store_converted=True + 有 postprocess：引擎新翻的條目寫進 cache 前
+    # 應先套用 postprocess（模擬簡轉繁），JSON 裡存的是「已轉換」的值；
+    # 輸出結果也仍是轉換後的值（postprocess 對已轉換文字視為安全的等冪操作，
+    # 這裡用假 postprocess 驗證「只轉一次」不會變成 XX）
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    postprocess = lambda s: s + "繁" if not s.endswith("繁") else s
+    p = Pipeline(cache, tr, target_lang="ZH", postprocess=postprocess,
+                 store_converted=True)
+    out = p.translate(["A"])
+    assert out == ["A_翻繁"]
+    # 重點：cache 裡存的是「已轉換」的值，而不是引擎原樣輸出的 "A_翻"
+    assert cache.get("A") == "A_翻繁"
+
+
+def test_store_converted_false_keeps_original_value_in_cache(tmp_path):
+    # store_converted=False（預設）+ 有 postprocess：cache 存的應是「原值」
+    # （引擎原樣輸出，未轉換），但輸出仍是轉換後的值——維持現況行為。
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    postprocess = lambda s: s + "繁"
+    p = Pipeline(cache, tr, target_lang="ZH", postprocess=postprocess)
+    out = p.translate(["A"])
+    assert out == ["A_翻繁"]
+    # 重點：cache 裡存的是「原值」（未轉換），輸出時才轉換
+    assert cache.get("A") == "A_翻"
+
+
+def test_store_converted_true_also_applies_to_global_cache(tmp_path):
+    # store_converted=True 對 global_cache 也要生效：寫進去的同樣是已轉換的值
+    game_cache = DictCache(str(tmp_path / "game_dict.json"))
+    global_cache = DictCache(str(tmp_path / "global_dict.json"))
+    tr = SpyTranslator()
+    postprocess = lambda s: s + "繁"
+    p = Pipeline(game_cache, tr, target_lang="ZH", postprocess=postprocess,
+                 global_cache=global_cache, store_converted=True)
+    p.translate(["新句子"])
+    assert game_cache.get("新句子") == "新句子_翻繁"
+    assert global_cache.get("新句子") == "新句子_翻繁"
+
+
+def test_store_converted_default_is_false(tmp_path):
+    # store_converted 預設值應為 False，維持現況行為（不傳這個參數時）
+    cache = DictCache(str(tmp_path / "d.json"))
+    tr = SpyTranslator()
+    p = Pipeline(cache, tr, target_lang="ZH")
+    assert p.store_converted is False
+
+
 def test_missing_not_exceeding_batch_saves_once(tmp_path):
     # 未命中筆數未超過 BATCH 時，維持原本「翻完存一次」的行為（只是分批邏輯的邊界情況）
     cache = DictCache(str(tmp_path / "d.json"))

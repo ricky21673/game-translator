@@ -161,6 +161,14 @@ class MainWindow(QWidget):
         # 沒勾選則完全不碰全域字典，行為與加這個功能之前一致。
         self.global_dict_checkbox = QCheckBox("使用全域共用字典（跨遊戲加速）")
         self.global_dict_checkbox.setChecked(True)
+        # 「翻譯 JSON 存繁體（預設存簡體較通用）」勾選框：預設不勾（即存簡體）。
+        # 只有在勾選「繁體中文（台灣用語）」（有 postprocess）時，這個選項才有作用；
+        # 決定「引擎新翻的條目」寫進 translator_dict.json/global_dict.json 時，
+        # 存的是簡體原文（未勾，通用、其他工具較好讀）還是已轉繁體（勾選）。
+        # 對應 Pipeline 的 store_converted 參數。
+        self.store_converted_checkbox = QCheckBox(
+            "翻譯 JSON 存繁體（預設存簡體較通用）")
+        self.store_converted_checkbox.setChecked(False)
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
@@ -169,7 +177,8 @@ class MainWindow(QWidget):
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
                   self.model_edit, self.dict_btn, self.traditional_checkbox,
-                  self.global_dict_checkbox, self.start_btn, self.restore_btn):
+                  self.global_dict_checkbox, self.store_converted_checkbox,
+                  self.start_btn, self.restore_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
@@ -216,6 +225,10 @@ class MainWindow(QWidget):
         - global_cache：若勾選「使用全域共用字典（跨遊戲加速）」，額外開啟
           ~/.game_translator/global_dict.json 這本跨遊戲共用字典傳給 Pipeline；
           沒勾選則傳 None，Pipeline 完全不碰全域字典（維持既有行為）。
+        - store_converted：只在有勾選「繁體中文（台灣用語）」時才把
+          「翻譯 JSON 存繁體」勾選框的值傳給 Pipeline；未勾繁體時 postprocess
+          本身就是 None，store_converted 不生效（Pipeline 內部亦有此判斷），
+          這裡直接傳勾選框的值即可，不需額外判斷。
         """
         cache_path = os.path.join(d.game_dir, "translator_dict.json")
         # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
@@ -243,7 +256,8 @@ class MainWindow(QWidget):
             make_traditional_converter()
             if self.traditional_checkbox.isChecked() else None)
         return Pipeline(cache, translator, target_lang="ZH", source_lang="JA",
-                        postprocess=postprocess, global_cache=global_cache)
+                        postprocess=postprocess, global_cache=global_cache,
+                        store_converted=self.store_converted_checkbox.isChecked())
 
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
