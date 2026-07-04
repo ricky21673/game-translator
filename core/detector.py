@@ -51,9 +51,11 @@ def detect(exe_path: str) -> Detection:
     # Unity：UnityPlayer.dll 或任何 *_Data 目錄
     if os.path.isfile(os.path.join(game_dir, "UnityPlayer.dll")):
         return Detection("unity", game_dir)
-    for name in os.listdir(game_dir):
-        if name.endswith("_Data") and os.path.isdir(os.path.join(game_dir, name)):
-            return Detection("unity", game_dir)
+    # 防禦：game_dir 不存在時跳過 listdir 掃描，避免 FileNotFoundError/PermissionError
+    if os.path.isdir(game_dir):
+        for name in os.listdir(game_dir):
+            if name.endswith("_Data") and os.path.isdir(os.path.join(game_dir, name)):
+                return Detection("unity", game_dir)
 
     # TyranoScript
     if os.path.isdir(os.path.join(game_dir, "data", "scenario")):
