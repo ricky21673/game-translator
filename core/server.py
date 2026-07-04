@@ -29,10 +29,31 @@ class TranslationServer:
                     self.end_headers()
                     return
 
-                # 讀取 request body
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length) or b"{}")
-                texts = body.get("texts", [])
+                try:
+                    # 讀取 request body
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = json.loads(self.rfile.read(length) or b"{}")
+
+                    # 驗證 texts 欄位：必須存在、是 list、元素都是字串
+                    if "texts" not in body:
+                        raise ValueError("缺少 texts 欄位")
+                    texts = body["texts"]
+                    if not isinstance(texts, list):
+                        raise ValueError("texts 必須是陣列")
+                    if not all(isinstance(t, str) for t in texts):
+                        raise ValueError("texts 的所有元素必須是字串")
+
+                except (json.JSONDecodeError, ValueError) as e:
+                    # 非法輸入回 400
+                    error_msg = str(e)
+                    error_payload = json.dumps(
+                        {"error": error_msg}, ensure_ascii=False).encode("utf-8")
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(error_payload)))
+                    self.end_headers()
+                    self.wfile.write(error_payload)
+                    return
 
                 # 呼叫 Pipeline 進行翻譯
                 result = pipeline.translate(texts)
