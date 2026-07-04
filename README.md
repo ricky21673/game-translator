@@ -15,7 +15,7 @@
 |---|---|---|
 | **RPG Maker MV** | `www/js/rpg_core.js` | 塞 JS plugin（遊戲自己載入）+ 底層畫字 hook 即時查表 |
 | **RPG Maker MZ** | `js/rmmz_core.js` | 同上（注入點改在 `main.js` 前） |
-| **TyranoScript（Electron 打包）** | `resources/app.asar` 內含 `.ks` | 解包 asar → 批次預翻 `.ks` → 改名 asar 讓遊戲改用翻好的資料夾 |
+| **TyranoScript（Electron 打包）** | `resources/app.asar` 內含 `.ks` | 解包 asar → 批次預翻 `.ks`（含回想/畫廊/選單等資料陣列文字）→ 改名 asar 讓遊戲改用翻好的資料夾 |
 
 > 選遊戲主程式後**自動判型**。Unity / 原生 / 加密遊戲目前未支援（見「規劃中」的 OCR 兜底）。
 
@@ -153,3 +153,5 @@ python -m venv .venv
 - **P2 OCR 通用兜底**：截圖 + manga-ocr/PaddleOCR + 復用引擎 + 疊字，涵蓋 Unity / 原生 / **加密遊戲** / 烤進 CG 圖片裡的文字。
 - **加密 JS 遊戲**的「執行期即時 hook」（比 OCR 準）。
 - 本地 LLM 批次速度優化、提示詞對包裹標籤（如 `[font_blue]…[resetfont]`）的保留。
+
+> 完整的未完成事項、已知限制與接手指南見**交接文件** `docs/superpowers/specs/2026-07-04-handoff.md`。
