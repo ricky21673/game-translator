@@ -55,21 +55,31 @@ def test_restore_unity_cannot_restore_in_p1():
 
 
 def test_only_dict_json_chooses_offline():
-    # 只選了字典 JSON、沒填 key → 離線字典模式
-    assert choose_translator_mode("/g/dict.json", "") == "offline"
+    # 只選了字典 JSON、沒填 key、引擎非 local → 離線字典模式
+    assert choose_translator_mode("deepl", "/g/dict.json", "") == "offline"
 
 
 def test_only_key_chooses_deepl():
-    # 只填了 key、沒選字典 JSON → DeepL 模式
-    assert choose_translator_mode(None, "sk-xxx") == "deepl"
+    # 只填了 key、沒選字典 JSON、引擎非 local → DeepL 模式
+    assert choose_translator_mode("deepl", None, "sk-xxx") == "deepl"
 
 
 def test_both_dict_and_key_chooses_deepl_with_seed():
-    # 兩者都有 → 仍走 DeepL（字典 JSON 當作種子快取，由呼叫端負責複製）
-    assert choose_translator_mode("/g/dict.json", "sk-xxx") == "deepl"
+    # 兩者都有、引擎非 local → 仍走 DeepL（字典 JSON 當作種子快取，由呼叫端負責複製）
+    assert choose_translator_mode("deepl", "/g/dict.json", "sk-xxx") == "deepl"
 
 
 def test_neither_chooses_none():
-    # 都沒有 → 不可啟動
-    assert choose_translator_mode(None, "") == "none"
-    assert choose_translator_mode("", "") == "none"
+    # 都沒有、引擎非 local → 不可啟動
+    assert choose_translator_mode("deepl", None, "") == "none"
+    assert choose_translator_mode("deepl", "", "") == "none"
+
+
+def test_local_engine_chooses_local_even_without_key_or_dict():
+    # 引擎選擇本地 Ollama → 不需 key 也不需字典即可啟動
+    assert choose_translator_mode("local", None, "") == "local"
+
+
+def test_local_engine_overrides_dict_and_key():
+    # 引擎選擇本地 Ollama → 即使有帶 key/dict 也優先走 local
+    assert choose_translator_mode("local", "/g/dict.json", "sk-xxx") == "local"

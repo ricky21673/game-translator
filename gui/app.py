@@ -17,9 +17,17 @@ from core.pipeline import Pipeline
 from core.server import TranslationServer
 from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
+from core.translators.local import LocalTranslator
 from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 
 SUPPORTED = ("mv", "mz")  # 支援 MV 與 MZ
+DEFAULT_LOCAL_MODEL = "qwen2.5:14b"
+
+# GUI 顯示字串 → choose_translator_mode 用的 engine 值
+ENGINE_DISPLAY_TO_KEY = {
+    "DeepL": "deepl",
+    "本地 Ollama": "local",
+}
 
 
 def resource_path(rel_path: str) -> str:
@@ -58,13 +66,17 @@ def can_restore(detection: Detection | None, engine_supported=SUPPORTED) -> bool
     return can_start(detection, engine_supported)
 
 
-def choose_translator_mode(dict_path: str | None, key: str) -> str:
+def choose_translator_mode(engine: str, dict_path: str | None, key: str) -> str:
     """
-    離線字典模式的核心決策（純函式，不碰檔案/網路，方便單測）：
-    - 有選字典 JSON 且沒填 key → "offline"（離線字典模式，NullTranslator）
-    - 有填 key（不論是否也選了字典 JSON）→ "deepl"（DeepL，若同時選了字典 JSON 則帶種子快取）
-    - 兩者都沒有 → "none"（不可啟動）
+    翻譯引擎模式的核心決策（純函式，不碰檔案/網路，方便單測）：
+    - engine == "local" → "local"（本地 Ollama，不需 key 也不需字典即可啟動，優先於其他判斷）
+    - 其餘（engine 非 local）：
+      - 有選字典 JSON 且沒填 key → "offline"（離線字典模式，NullTranslator）
+      - 有填 key（不論是否也選了字典 JSON）→ "deepl"（DeepL，若同時選了字典 JSON 則帶種子快取）
+      - 兩者都沒有 → "none"（不可啟動）
     """
+    if engine == "local":
+        return "local"
     has_dict = bool(dict_path)
     has_key = bool(key)
     if has_key:
@@ -87,8 +99,12 @@ class MainWindow(QWidget):
         self.info = QLabel("請先選擇遊戲主程式")
         self.engine_box = QComboBox()
         self.engine_box.addItem("DeepL")
+        self.engine_box.addItem("本地 Ollama")
         self.key_edit = QLineEdit()
         self.key_edit.setPlaceholderText("DeepL API Key")
+        self.model_edit = QLineEdit()
+        self.model_edit.setText(DEFAULT_LOCAL_MODEL)
+        self.model_edit.setPlaceholderText("本地 Ollama 模型名稱")
         self.dict_btn = QPushButton("選擇既有字典 JSON（離線，可不填 key）")
         self.start_btn = QPushButton("開始")
         self.start_btn.setEnabled(False)
@@ -97,7 +113,7 @@ class MainWindow(QWidget):
 
         lay = QVBoxLayout(self)
         for w in (self.pick_btn, self.info, self.engine_box, self.key_edit,
-                  self.dict_btn, self.start_btn, self.restore_btn):
+                  self.model_edit, self.dict_btn, self.start_btn, self.restore_btn):
             lay.addWidget(w)
 
         self.pick_btn.clicked.connect(self.on_pick)
@@ -136,9 +152,11 @@ class MainWindow(QWidget):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
         if not can_start(self.detection):
             return
-        # 引擎選擇決策：offline（離線字典）/ deepl（線上，可帶種子字典）/ none（都沒填）
+        # 引擎選擇決策：local（本地 Ollama，線上路徑）/ offline（離線字典）/
+        # deepl（線上，可帶種子字典）/ none（都沒填）
         key = self.key_edit.text().strip()
-        mode = choose_translator_mode(self.dict_path, key)
+        engine = ENGINE_DISPLAY_TO_KEY.get(self.engine_box.currentText(), "deepl")
+        mode = choose_translator_mode(engine, self.dict_path, key)
         if mode == "none":
             self.info.setText("請填 DeepL key 或選擇既有字典 JSON")
             return
@@ -167,6 +185,9 @@ class MainWindow(QWidget):
 
             if mode == "offline":
                 translator = NullTranslator()
+            elif mode == "local":
+                model = self.model_edit.text().strip() or DEFAULT_LOCAL_MODEL
+                translator = LocalTranslator(model=model)
             else:
                 translator = DeepLTranslator(key, free=True)
             pipe = Pipeline(cache, translator, target_lang="ZH", source_lang="JA")
@@ -179,13 +200,18 @@ class MainWindow(QWidget):
             bridge = resource_path(os.path.join(
                 "adapters", "mv", "ZZ_Translator_Bridge.js"))
             # 離線模式：把整份字典嵌入遊戲端（MTool 式），供底層畫字 hook 即時查表；
-            # DeepL 線上模式維持 None，走既有 server/collectStrings 路徑，不受影響。
+            # DeepL 與本地 Ollama 皆維持 None，走既有 server/collectStrings 線上路徑，
+            # 逐句翻並快取到 translator_dict.json，不受影響。
             offline_dict = cache.as_dict() if mode == "offline" else None
             deploy_mv_adapter(d.web_dir, port, maps, bridge_src=os.path.abspath(bridge),
                               offline_dict=offline_dict)
             launch_game(self.exe_path)
             if mode == "offline":
                 self.info.setText("已啟動（離線字典模式），翻譯服務執行中…")
+            elif mode == "local":
+                self.info.setText(
+                    "已啟動（本地 Ollama 模式），翻譯服務執行中…"
+                    "（首次翻譯較慢，之後走快取）")
             else:
                 self.info.setText("已啟動遊戲，翻譯服務執行中…")
         except Exception as e:
