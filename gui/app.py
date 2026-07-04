@@ -39,7 +39,7 @@ from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 from adapters.tyrano.deploy import deploy_tyrano, restore_tyrano
 
 SUPPORTED = ("mv", "mz", "tyrano")  # 支援 MV、MZ 與 TyranoScript
-DEFAULT_LOCAL_MODEL = "qwen2.5:14b"
+DEFAULT_LOCAL_MODEL = "sakura"
 
 # GUI 顯示字串 → 內部引擎值（同時也是 choose_translator_mode 用的 engine 值）。
 # 用 dict 保序（Python 3.7+ 保證插入順序），engine_box 依此順序加入選項。
