@@ -56,7 +56,7 @@
             if (res[i]) dict[texts[i]] = res[i];
           }
         }
-      } catch (e) { /* 失敗則維持原文，不崩 */ }
+      } catch (e) { console.warn("[Translator_Bridge] 解析翻譯回應失敗，維持原文:", e); }
       done();
     };
     xhr.send(JSON.stringify({ texts: texts }));
@@ -75,7 +75,7 @@
     try {
       var texts = collectStrings();
       requestTranslation(texts, function () {});
-    } catch (e) { /* 不影響遊戲啟動 */ }
+    } catch (e) { console.warn("[Translator_Bridge] 開機抽字串/翻譯失敗:", e); }
     _onLoad.call(this);
   };
 })();
