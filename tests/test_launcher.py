@@ -42,3 +42,30 @@ def test_deploy_is_reentrant(tmp_path):
     deploy_mv_adapter(www, 1, maps=[], bridge_src=b)
     plugins = open(os.path.join(www, "js", "plugins.js"), encoding="utf-8").read()
     assert plugins.count("ZZ_Translator_Bridge") == 1  # 不重複註冊
+
+def test_deploy_appends_to_nonempty_plugins_with_brackets(tmp_path):
+    # 模擬真實 RPG Maker MV 的 plugins.js：非空陣列，且既有 entry 的字串參數內含 ] 字元，
+    # 驗證定位邏輯不會被 entry 內部的 ] 誤導、我方 plugin 仍被正確插入為陣列最後一筆
+    www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
+    # 既有兩個 plugin，且參數字串內含 ] 字元（模擬真實 MV）
+    js.joinpath("plugins.js").write_text(
+        'var $plugins =\n[\n'
+        '{"name":"Existing_A","status":true,"description":"用 [Tab] 切換","parameters":{"list":"[\\"a\\"]"}},\n'
+        '{"name":"Existing_B","status":true,"description":"","parameters":{}}\n'
+        '];\n', encoding="utf-8")
+    www.joinpath("index.html").write_text(
+        "<html><body><script type='text/javascript' src='js/plugins.js'></script></body></html>",
+        encoding="utf-8")
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    from launcher import deploy_mv_adapter
+    deploy_mv_adapter(str(www), 999, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+    text = js.joinpath("plugins.js").read_text(encoding="utf-8")
+    # 我方 plugin 必須被加入，且是陣列最後一個 entry（在 Existing_B 之後、] 之前）
+    assert text.count("ZZ_Translator_Bridge") == 1
+    assert text.index("Existing_B") < text.index("ZZ_Translator_Bridge")
+    assert text.index("ZZ_Translator_Bridge") < text.rindex("]")
+    # 既有 entry 未被破壞
+    assert "Existing_A" in text and "Existing_B" in text
+    # 結構仍以 ]; 收尾
+    assert text.rstrip().endswith("];")
