@@ -6,6 +6,7 @@ from .base import Translator
 _CONTROL_RE = re.compile(r"\\(?:[A-Za-z]+(?:\[[^\]]*\])?|[|.^!<>$])")
 
 # placeholder 用私有區字元包住序號，模型幾乎不會動到它，也不含反斜線/日文。
+# 注意：下兩行引號內是不可見的私有使用區字元 U+E000 / U+E001（非空字串），作為 placeholder 左右界
 _PH_L = ""
 _PH_R = ""
 

@@ -33,3 +33,13 @@ def test_restore_is_best_effort_when_placeholder_dropped():
     # 模型把 placeholder 弄丟時，不應炸掉，回傳去掉該碼的結果
     masked, tokens = _mask("\\FS[28]あ")
     assert _restore("あ", tokens) == "あ"
+
+
+def test_placeholder_not_confused_with_digits():
+    # 控制碼旁邊的日文含一般數字「3」，還原時不可把它誤當 placeholder
+    s = "\\FS[28]残り3個"
+    masked, tokens = _mask(s)
+    # 遮罩後仍看得到那個一般數字 3（它不是控制碼的一部分）
+    assert "3" in masked
+    # 還原必須完整還原原字串（若 placeholder 被寫成空字串，這裡會壞掉）
+    assert _restore(masked, tokens) == s
