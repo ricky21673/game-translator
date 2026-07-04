@@ -29,6 +29,11 @@ def test_unity_cannot_start_in_p1():
     assert can_start(Detection("unity", "/g")) is False
 
 
+def test_tyrano_can_start():
+    # 偵測到 TyranoScript 引擎（game_dir 有值、web_dir 為 None）→ 可以開始
+    assert can_start(Detection("tyrano", game_dir="/g")) is True
+
+
 def test_restore_no_selection_cannot_restore():
     # 未選擇遊戲（detection 為 None）→ 還原鈕不可用
     assert can_restore(None) is False
@@ -52,6 +57,11 @@ def test_restore_unknown_cannot_restore():
 def test_restore_unity_cannot_restore_in_p1():
     # P1 尚未支援 Unity → 還原鈕不可用
     assert can_restore(Detection("unity", "/g")) is False
+
+
+def test_restore_tyrano_can_restore():
+    # 偵測到 TyranoScript 引擎 → 還原鈕可用
+    assert can_restore(Detection("tyrano", game_dir="/g")) is True
 
 
 def test_only_dict_json_chooses_offline():

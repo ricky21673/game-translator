@@ -1,11 +1,18 @@
 # 最小 PySide6 GUI：選遊戲 exe → 自動判型 → 顯示 → 依「是否支援」鎖/解鎖「開始」
-# → 按開始執行整合流程（讀地圖 → 起 server → 部署 adapter → 開遊戲）。
+# → 按開始執行整合流程：
+#   - RPG Maker（mv/mz）：讀地圖 → 起 server → 部署 adapter → 開遊戲，翻譯在遊戲執行時
+#     由 server 即時處理。
+#   - TyranoScript（tyrano）：部署「就是」批次預翻（解包 app.asar → 翻完所有 .ks →
+#     改名讓 Electron 吃解包後的 app/），較耗時但翻完直接啟動，執行時不需要 server。
+#     因為耗時，部署階段在背景執行緒跑，避免卡住 GUI 事件迴圈；進度透過 Qt signal
+#     回主執行緒更新畫面。
 import glob
 import json
 import os
 import shutil
 import sys
 
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
     QVBoxLayout, QFileDialog,
@@ -19,8 +26,9 @@ from core.translators.deepl import DeepLTranslator
 from core.translators.null import NullTranslator
 from core.translators.local import LocalTranslator
 from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
+from adapters.tyrano.deploy import deploy_tyrano, restore_tyrano
 
-SUPPORTED = ("mv", "mz")  # 支援 MV 與 MZ
+SUPPORTED = ("mv", "mz", "tyrano")  # 支援 MV、MZ 與 TyranoScript
 DEFAULT_LOCAL_MODEL = "qwen2.5:14b"
 
 # GUI 顯示字串 → choose_translator_mode 用的 engine 值
@@ -86,6 +94,38 @@ def choose_translator_mode(engine: str, dict_path: str | None, key: str) -> str:
     return "none"
 
 
+class TyranoDeployWorker(QObject):
+    """
+    背景執行緒工作者：在非主執行緒跑「耗時」的 Tyrano 批次預翻部署（deploy_tyrano），
+    避免卡住 Qt 主事件迴圈（GUI 凍結）。
+
+    設計：QObject + moveToThread（而非繼承 QThread），方便日後替換/測試——
+    run() 本身是一般方法，可在測試中脫離真正的 QThread、直接同步呼叫驗證邏輯，
+    也可以視需要塞進 QThreadPool。三個 signal 皆為 queued 連線送回主執行緒：
+    - progress(done, total, phase)：轉呼 deploy_tyrano 的 progress 回呼
+    - finished(stats)：deploy_tyrano 成功回傳的統計 dict
+    - error(message)：deploy_tyrano 拋出例外時的錯誤訊息（字串化後的例外內容）
+    """
+    progress = Signal(int, int, str)
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, game_dir: str, pipeline: Pipeline):
+        super().__init__()
+        self.game_dir = game_dir
+        self.pipeline = pipeline
+
+    def run(self) -> None:
+        try:
+            stats = deploy_tyrano(
+                self.game_dir, self.pipeline,
+                progress=lambda done, total, phase: self.progress.emit(done, total, phase))
+        except Exception as e:
+            self.error.emit(str(e))
+            return
+        self.finished.emit(stats)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -94,6 +134,8 @@ class MainWindow(QWidget):
         self.detection: Detection | None = None
         self.server: TranslationServer | None = None
         self.dict_path: str | None = None  # 使用者選擇的既有字典 JSON（離線模式用）
+        self._tyrano_thread: QThread | None = None  # Tyrano 部署背景執行緒（進行中才有值）
+        self._tyrano_worker: TyranoDeployWorker | None = None
 
         self.pick_btn = QPushButton("選擇遊戲主程式…")
         self.info = QLabel("請先選擇遊戲主程式")
@@ -148,6 +190,32 @@ class MainWindow(QWidget):
             return
         self.dict_path = path
 
+    def _build_pipeline(self, d: Detection, mode: str, key: str) -> Pipeline:
+        """
+        依 mode 建立 Pipeline（cache + translator），mv/mz 與 tyrano 共用這段決策：
+        - cache 來自使用者選的字典 JSON（若有，複製成該遊戲專屬的工作快取）
+        - translator 依 mode：offline → NullTranslator、local → LocalTranslator、
+          其餘（deepl）→ DeepLTranslator
+        """
+        cache_path = os.path.join(d.game_dir, "translator_dict.json")
+        # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
+        if self.dict_path:
+            src = os.path.abspath(self.dict_path)
+            dst = os.path.abspath(cache_path)
+            # 來源與目的相同路徑時跳過複製，避免 shutil.copyfile 自我覆蓋出錯
+            if src != dst:
+                shutil.copyfile(src, dst)
+        cache = DictCache(cache_path)
+
+        if mode == "offline":
+            translator = NullTranslator()
+        elif mode == "local":
+            model = self.model_edit.text().strip() or DEFAULT_LOCAL_MODEL
+            translator = LocalTranslator(model=model)
+        else:
+            translator = DeepLTranslator(key, free=True)
+        return Pipeline(cache, translator, target_lang="ZH", source_lang="JA")
+
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
         if not can_start(self.detection):
@@ -160,7 +228,14 @@ class MainWindow(QWidget):
         if mode == "none":
             self.info.setText("請填 DeepL key 或選擇既有字典 JSON")
             return
-        # 整合流程：讀地圖 → 起 server → 部署 adapter → 開遊戲
+
+        if self.detection.engine == "tyrano":
+            self._on_start_tyrano(mode, key)
+            return
+        self._on_start_rpgmaker(mode, key)
+
+    def _on_start_rpgmaker(self, mode: str, key: str) -> None:
+        # RPG Maker（mv/mz）整合流程：讀地圖 → 起 server → 部署 adapter → 開遊戲
         # 全程 try/except 容錯：任一步驟丟例外（如填錯 DeepL key、斷網）都要顯示錯誤訊息，
         # 不可讓例外逸出導致 Qt 事件迴圈崩潰或 UI 靜默卡住。
         try:
@@ -173,24 +248,8 @@ class MainWindow(QWidget):
                 except (json.JSONDecodeError, OSError) as e:
                     print(f"[警告] 讀取地圖失敗 {mp}: {e}")
 
-            cache_path = os.path.join(d.game_dir, "translator_dict.json")
-            # offline 或「deepl 但有帶種子字典」都要把使用者選的 JSON 複製成工作快取
-            if self.dict_path:
-                src = os.path.abspath(self.dict_path)
-                dst = os.path.abspath(cache_path)
-                # 來源與目的相同路徑時跳過複製，避免 shutil.copyfile 自我覆蓋出錯
-                if src != dst:
-                    shutil.copyfile(src, dst)
-            cache = DictCache(cache_path)
-
-            if mode == "offline":
-                translator = NullTranslator()
-            elif mode == "local":
-                model = self.model_edit.text().strip() or DEFAULT_LOCAL_MODEL
-                translator = LocalTranslator(model=model)
-            else:
-                translator = DeepLTranslator(key, free=True)
-            pipe = Pipeline(cache, translator, target_lang="ZH", source_lang="JA")
+            pipe = self._build_pipeline(d, mode, key)
+            cache = pipe.cache
 
             # 重複點開始不疊加多個 server：起新 server 前先關掉舊的
             if self.server:
@@ -217,6 +276,67 @@ class MainWindow(QWidget):
         except Exception as e:
             self.info.setText(f"啟動失敗：{e}")
 
+    def _on_start_tyrano(self, mode: str, key: str) -> None:
+        # TyranoScript 流程：部署「就是」批次預翻，不需要 server，也不用讀地圖。
+        # 因為要翻完全部 .ks 才能啟動遊戲，較耗時，故在背景執行緒跑，避免卡住 GUI；
+        # progress 透過 Qt signal（queued 連線）回主執行緒更新 self.info。
+        try:
+            d = self.detection
+            pipe = self._build_pipeline(d, mode, key)
+        except Exception as e:
+            self.info.setText(f"啟動失敗：{e}")
+            return
+
+        self.start_btn.setEnabled(False)
+        self.info.setText("翻譯中（Tyrano）：準備中…")
+
+        thread = QThread()
+        worker = TyranoDeployWorker(d.game_dir, pipe)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_tyrano_progress)
+        worker.finished.connect(self._on_tyrano_finished)
+        worker.error.connect(self._on_tyrano_error)
+        # 收尾：worker 跑完（成功或失敗）就請 thread 結束事件迴圈並釋放。
+        # 注意：釋放 self._tyrano_thread/_tyrano_worker 的參照必須等到 thread.finished
+        # （QThread 的事件迴圈真正退出後）才能做——若在 worker.finished/error 當下
+        # （此時 thread 可能仍在退出過程中）就把 Python 對 thread 的最後參照清掉，
+        # GC 會嘗試銷毀一個仍在運行中的 QThread，導致卡死（已實測重現此問題）。
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(self._on_tyrano_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+
+        # 保留參考，避免執行緒/worker 被 Python GC 提前回收
+        self._tyrano_thread = thread
+        self._tyrano_worker = worker
+        thread.start()
+
+    def _on_tyrano_progress(self, done: int, total: int, phase: str) -> None:
+        phase_label = {"collect": "收集文字", "translate": "翻譯中", "write": "寫回檔案"}.get(
+            phase, phase)
+        self.info.setText(f"翻譯中（Tyrano，{phase_label}）：{done}/{total}")
+
+    def _on_tyrano_finished(self, stats: dict) -> None:
+        # 只負責啟動遊戲與更新訊息；執行緒參照的釋放交給 _on_tyrano_thread_finished。
+        try:
+            launch_game(self.exe_path)
+            self.info.setText(
+                "已完成翻譯並啟動（Tyrano）：翻了 %d/%d 段"
+                % (stats.get("translated", 0), stats.get("segments", 0)))
+        except Exception as e:
+            self.info.setText(f"Tyrano 部署失敗：{e}")
+
+    def _on_tyrano_error(self, message: str) -> None:
+        self.info.setText(f"Tyrano 部署失敗：{message}")
+
+    def _on_tyrano_thread_finished(self) -> None:
+        # QThread 的事件迴圈已真正結束，此時釋放參照才安全；同時恢復「開始」鈕可用。
+        self.start_btn.setEnabled(can_start(self.detection))
+        self._tyrano_thread = None
+        self._tyrano_worker = None
+
     def on_restore(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能還原（邏輯層生效，不只靠 UI 的 setEnabled）
         if not can_restore(self.detection):
@@ -227,7 +347,10 @@ class MainWindow(QWidget):
             if self.server:
                 self.server.stop()
                 self.server = None
-            restore_mv_adapter(self.detection.web_dir)
+            if self.detection.engine == "tyrano":
+                restore_tyrano(self.detection.game_dir)
+            else:
+                restore_mv_adapter(self.detection.web_dir)
             self.info.setText("已還原遊戲原始檔")
         except Exception as e:
             self.info.setText(f"還原失敗：{e}")
