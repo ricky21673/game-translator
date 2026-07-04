@@ -204,3 +204,47 @@ def test_deploy_without_offline_dict_does_not_write_dict_data_file(tmp_path):
     assert not os.path.isfile(dict_data_path)
     html = open(os.path.join(www, "index.html"), encoding="utf-8").read()
     assert "translator_dict_data.js" not in html
+
+
+def test_deploy_adds_dict_data_when_boot_already_present_but_dict_missing(tmp_path):
+    # 重現真實情境：使用者先前已部署過線上模式（index.html 已含 translator_boot.js，
+    # 但尚未含 translator_dict_data.js），這次改用離線字典模式重新部署。
+    # 預期：dict_data 的 <script> 必須被「補注入」，且排在 plugins.js 之前；
+    # boot 已存在則不應被重複注入。
+    www = _mk_mv(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    bridge_src = str(src / "ZZ_Translator_Bridge.js")
+
+    # 先以線上模式（無 offline_dict）部署一次，讓 index.html 已含 translator_boot.js
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=bridge_src)
+    index_path = os.path.join(www, "index.html")
+    html_before = open(index_path, encoding="utf-8").read()
+    assert "translator_boot.js" in html_before
+    assert "translator_dict_data.js" not in html_before
+
+    # 再以離線字典模式重新部署，模擬使用者切換到離線模式
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=bridge_src,
+                       offline_dict={"はい": "是"})
+
+    html_after = open(index_path, encoding="utf-8").read()
+    # dict_data 應被新增，且排在 plugins.js 之前
+    assert html_after.count("translator_dict_data.js") == 1
+    assert html_after.index("translator_dict_data.js") < html_after.index("plugins.js")
+    # boot 不應被重複注入
+    assert html_after.count("translator_boot.js") == 1
+
+
+def test_restore_after_offline_deploy_removes_dict_data_file(tmp_path):
+    # 離線模式部署後呼叫 restore：translator_dict_data.js 檔案應被刪除
+    www = _mk_mv(tmp_path)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(www, 1, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"),
+                       offline_dict={"はい": "是"})
+    dict_data_path = os.path.join(www, "js", "translator_dict_data.js")
+    assert os.path.isfile(dict_data_path)
+
+    restore_mv_adapter(www)
+
+    assert not os.path.isfile(dict_data_path)

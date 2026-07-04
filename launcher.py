@@ -72,23 +72,30 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         with open(plugins_js, "w", encoding="utf-8") as f:
             f.write(text)
 
-    # 4) 確保 index.html 於載入 plugins.js 前引入 dict_data（若有）與 boot（可重入：檢查是否已引入）
+    # 4) 確保 index.html 於載入 plugins.js 前引入 dict_data（若有）與 boot
+    #    兩個 <script> 各自獨立判斷、獨立注入，避免其中一個已存在時，
+    #    連帶把另一個也可重入判斷（可重入：已存在的 script 不重複注入）。
+    #    例如：使用者先前已部署過線上模式（boot 已存在），這次改用離線模式，
+    #    此時應只補注入 dict_data，而不是因為 boot 已存在就整段跳過。
     index = os.path.join(www_dir, "index.html")
     # 修改前先備份原始檔（僅第一次部署會真的複製，之後保留最初版本）
     _backup_if_missing(index)
     html = open(index, encoding="utf-8").read()
+
+    tag = ""
+    if offline_dict is not None and "translator_dict_data.js" not in html:
+        tag += '<script type="text/javascript" src="js/translator_dict_data.js"></script>\n'
     if "translator_boot.js" not in html:
-        # 兩者皆須排在 plugins.js 之前；dict_data 在前、boot 在後（boot 內容不依賴
-        # dict_data 是否存在，順序僅需同一批插在 plugins.js 前即可）。
-        tag = ""
-        if offline_dict is not None:
-            tag += '<script type="text/javascript" src="js/translator_dict_data.js"></script>\n'
         tag += '<script type="text/javascript" src="js/translator_boot.js"></script>\n'
+
+    if tag:
+        # 只有在「確實需要注入」時，才要求 plugins.js 載入點必須存在；
+        # 若兩者皆已存在（tag 為空字串），即使找不到載入點也不應 raise。
         html, n = re.subn(r'(<script[^>]*src=["\']js/plugins\.js["\'][^>]*>)',
                           tag + r"\1", html, count=1)
         if n == 0:
             raise RuntimeError(
-                "無法在 index.html 找到 js/plugins.js 的載入點，boot script 未能注入")
+                "無法在 index.html 找到 js/plugins.js 的載入點，script 未能注入")
         with open(index, "w", encoding="utf-8") as f:
             f.write(html)
     return dst
@@ -132,7 +139,8 @@ def restore_mv_adapter(www_dir: str) -> None:
     流程（全程容錯，任一步驟失敗只印警告訊息，不會讓整個還原中止到一半而不提示）：
     1) plugins.js：若有 .trbak → 複製回去、刪除 .trbak；沒有則印警告略過。
     2) index.html：同上，用 index.html.trbak。
-    3) 刪除我方新增的兩個檔：js/plugins/ZZ_Translator_Bridge.js、js/translator_boot.js。
+    3) 刪除我方新增的三個檔：js/plugins/ZZ_Translator_Bridge.js、
+       js/translator_boot.js、js/translator_dict_data.js（離線字典模式才會產生）。
     """
     js_dir = os.path.join(www_dir, "js")
 
@@ -147,6 +155,9 @@ def restore_mv_adapter(www_dir: str) -> None:
 
     boot = os.path.join(js_dir, "translator_boot.js")
     _remove_if_exists(boot, "translator_boot.js")
+
+    dict_data = os.path.join(js_dir, "translator_dict_data.js")
+    _remove_if_exists(dict_data, "translator_dict_data.js")
 
 
 def launch_game(exe_path: str) -> subprocess.Popen:
