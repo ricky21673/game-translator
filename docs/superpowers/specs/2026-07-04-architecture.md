@@ -2,7 +2,7 @@
 
 > 本文件反映**目前實際實作**的完整架構，取代早期只涵蓋 P1（MV 骨架）的
 > `2026-07-04-game-translator-p1-design.md`（該份與其 plan 保留作歷史紀錄）。
-> 測試現況：約 198 passed（含加密 MZ 支援；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
+> 測試現況：約 207 passed（含加密 MZ 支援；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
 
 ---
 
@@ -60,7 +60,7 @@
 - **launcher.restore_mv_adapter**：還原 plugins.js/index.html、刪 bridge/boot/dict_data。
 
 ### 4.2 TyranoScript — `adapters/tyrano/` + `deploy.py`
-- `ks.py`：`extract_segments`／`apply_translations`（只翻純文字行，跳 `[標籤]`/`#名`/`*label`/`;`/`//`；保留行內 `[n2]` 與結尾 `[p]`）。
+- `ks.py`：`extract_segments`／`apply_translations`（翻純文字行 + 資料陣列行 `[數字,…]` 引號內容 + **標籤屬性白名單顯示文字**〔`text`/`hint`/`label`/`label_ok`/`label_cancel`；跳過 `name`/`exp`/`&` 變數運算式〕；跳 `#名`/`*label`/`;`/`//`；保留行內 `[n2]` 與結尾 `[p]`）。
 - `deploy.py`：`translate_tree`（跨檔彙整去重 → 一次 pipeline.translate → 逐檔回寫；三階段 progress）、`deploy_tyrano`（解包 app.asar → 翻 → `os.replace` 把 app.asar 改名成 `.trbak`；可重入）、`restore_tyrano`（刪 app/、改名回 app.asar）。
 
 ---
@@ -103,5 +103,5 @@
 
 ## 9. 測試
 
-- `pytest`：約 198 passed（detector/cache/translators/pipeline/server/asar/tyrano/launcher/gui 狀態機/postprocess/paths + 加密 MZ 解密/抽字/控制碼保護/批次預翻…；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
+- `pytest`：約 207 passed（detector/cache/translators/pipeline/server/asar/tyrano/launcher/gui 狀態機/postprocess/paths + 加密 MZ 解密/抽字/控制碼保護/批次預翻…；`test_server.py` 偶發 Windows socket flaky，重跑即綠）。
 - 遊戲端 JS 以 `node --check` 靜態驗；真實遊戲的視覺翻譯由使用者實機驗收。
