@@ -37,6 +37,7 @@ from core.translators.local import LocalTranslator
 from gui.monitor import TranslationMonitor
 from launcher import deploy_mv_adapter, launch_game, restore_mv_adapter
 from adapters.tyrano.deploy import deploy_tyrano, restore_tyrano
+from version import __version__
 
 SUPPORTED = ("mv", "mz", "tyrano")  # 支援 MV、MZ 與 TyranoScript
 DEFAULT_LOCAL_MODEL = "sakura"
@@ -205,7 +206,7 @@ class EncryptedMzWorker(QObject):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Game Translator")
+        self.setWindowTitle(f"Game Translator v{__version__}")
         self.exe_path: str | None = None
         self.detection: Detection | None = None
         self.server: TranslationServer | None = None

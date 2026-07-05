@@ -6,6 +6,7 @@ datas = [('adapters/mv/ZZ_Translator_Bridge.js', 'adapters/mv')]
 # 加密 MZ 功能的模組有些是 gui 函式內的延遲 import（只在執行到加密路徑才觸發），
 # 明確列入 hiddenimports 以保證被打包，避免執行期才炸 ImportError。
 hiddenimports = [
+    'version',
     'core.mz_decrypt',
     'core.mz_extract',
     'core.translators.protect',

@@ -103,6 +103,13 @@ def test_traditional_and_store_converted_hidden_from_ui():
     assert win.auto_launch_checkbox.parent() is not None
 
 
+def test_window_title_shows_version():
+    # 視窗標題應含版本號（Game Translator vX.Y）
+    from version import __version__
+    win = app_module.MainWindow()
+    assert win.windowTitle() == f"Game Translator v{__version__}"
+
+
 def test_restore_last_session_restores_game_and_dict(tmp_path):
     # 啟動還原：上次的遊戲與字典路徑仍存在 → 重開自動還原（含顯示與按鈕）
     from PySide6.QtCore import QSettings
