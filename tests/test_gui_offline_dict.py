@@ -103,6 +103,42 @@ def test_traditional_and_store_converted_hidden_from_ui():
     assert win.auto_launch_checkbox.parent() is not None
 
 
+def test_restore_last_session_restores_game_and_dict(tmp_path):
+    # 啟動還原：上次的遊戲與字典路徑仍存在 → 重開自動還原（含顯示與按鈕）
+    from PySide6.QtCore import QSettings
+    game_dir, www = _mk_mv_game(tmp_path)
+    exe = game_dir / "Game.exe"
+    exe.write_text("", encoding="utf-8")
+    dict_path = tmp_path / "seed.json"
+    dict_path.write_text("{}", encoding="utf-8")
+
+    win = app_module.MainWindow()
+    win.settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    win.settings.setValue("paths/last_exe", str(exe))
+    win.settings.setValue("paths/last_dict", str(dict_path))
+    win.restore_last_session()
+
+    assert win.detection is not None and win.detection.engine == "mv"
+    assert "遊戲：" in win.game_label.text()
+    assert win.dict_path == str(dict_path)
+    assert win.dict_label.text() == str(dict_path)
+    assert win.start_btn.isEnabled() is True
+
+
+def test_restore_last_session_skips_missing_paths(tmp_path):
+    # 路徑已不存在（如遊戲暫存夾被清）→ 不還原、不報錯，維持初始狀態
+    from PySide6.QtCore import QSettings
+    win = app_module.MainWindow()
+    win.settings = QSettings(str(tmp_path / "s2.ini"), QSettings.IniFormat)
+    win.settings.setValue("paths/last_exe", str(tmp_path / "gone" / "Game.exe"))
+    win.settings.setValue("paths/last_dict", str(tmp_path / "gone.json"))
+    win.restore_last_session()
+
+    assert win.detection is None
+    assert win.game_label.text() == "尚未選擇遊戲"
+    assert win.dict_label.text() == "未選擇字典"
+
+
 def test_store_converted_checkbox_checked_passes_true_to_pipeline(tmp_path, monkeypatch):
     # 勾選「翻譯 JSON 存繁體」時，_build_pipeline 應把 store_converted=True 傳給 Pipeline
     game_dir, www = _mk_mv_game(tmp_path)

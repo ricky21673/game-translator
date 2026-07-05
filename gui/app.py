@@ -18,7 +18,7 @@ import os
 import shutil
 import sys
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Signal, QSettings
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
     QVBoxLayout, QHBoxLayout, QFileDialog, QCheckBox, QGroupBox,
@@ -210,6 +210,8 @@ class MainWindow(QWidget):
         self.detection: Detection | None = None
         self.server: TranslationServer | None = None
         self.dict_path: str | None = None  # 使用者選擇的既有字典 JSON（離線/種子用）
+        # 記住上次的遊戲/字典/資料夾，跨重開沿用（Windows 存登錄檔）
+        self.settings = QSettings("GameTranslator", "GameTranslator")
         self._tyrano_thread: QThread | None = None  # Tyrano 部署背景執行緒（進行中才有值）
         self._tyrano_worker: TyranoDeployWorker | None = None
 
@@ -365,12 +367,26 @@ class MainWindow(QWidget):
         self._populate_model_box(names)
         self.info.setText(f"已偵測到 {len(names)} 個本機 Ollama 模型")
 
+    def _last_dir(self, key: str) -> str:
+        # 取上次某類路徑(key)的所在資料夾，供檔案對話框當起始位置；不存在則回空字串
+        p = self.settings.value(key)
+        if isinstance(p, str) and p:
+            d = os.path.dirname(p)
+            if os.path.isdir(d):
+                return d
+        return ""
+
     def on_pick(self):
-        # 開檔案選擇對話框，選取遊戲主程式（.exe）
+        # 開檔案選擇對話框，選取遊戲主程式（.exe）；起始資料夾回到上次選遊戲的位置
         path, _ = QFileDialog.getOpenFileName(
-            self, "選擇遊戲主程式", "", "執行檔 (*.exe)")
+            self, "選擇遊戲主程式", self._last_dir("paths/last_exe"), "執行檔 (*.exe)")
         if not path:
             return
+        self.settings.setValue("paths/last_exe", path)  # 記住這次，供下次重開還原/回到此夾
+        self._apply_game(path)
+
+    def _apply_game(self, path: str):
+        # 套用一個遊戲 exe：判型、更新顯示與按鈕。供 on_pick 與啟動還原共用。
         self.exe_path = path
         self.detection = detect(path)
         label = {"mv": "RPG Maker MV", "mz": "RPG Maker MZ",
@@ -393,13 +409,31 @@ class MainWindow(QWidget):
         self.restore_btn.setEnabled(can_restore(self.detection))
 
     def on_pick_dict(self):
-        # 開檔案選擇對話框，選取既有字典 JSON（離線必選；deepl/local 可選種子/打底）
+        # 開檔案選擇對話框，選取既有字典 JSON；起始資料夾回到上次選字典的位置
         path, _ = QFileDialog.getOpenFileName(
-            self, "選擇字典 JSON", "", "JSON (*.json)")
+            self, "選擇字典 JSON", self._last_dir("paths/last_dict"), "JSON (*.json)")
         if not path:
             return
+        self.settings.setValue("paths/last_dict", path)  # 記住這次
+        self._apply_dict(path)
+
+    def _apply_dict(self, path: str):
+        # 套用一個字典 JSON：更新路徑與顯示。供 on_pick_dict 與啟動還原共用。
         self.dict_path = path
         self.dict_label.setText(path)
+
+    def restore_last_session(self):
+        # 啟動時還原上次選的遊戲與字典（路徑仍存在才還原；失敗只提示、不影響啟動）。
+        # 由 main.py 在建立視窗後呼叫（不放 __init__，以免影響單元測試的初始狀態）。
+        try:
+            last_exe = self.settings.value("paths/last_exe")
+            if isinstance(last_exe, str) and os.path.isfile(last_exe):
+                self._apply_game(last_exe)
+            last_dict = self.settings.value("paths/last_dict")
+            if isinstance(last_dict, str) and os.path.isfile(last_dict):
+                self._apply_dict(last_dict)
+        except Exception as e:
+            print(f"[提示] 還原上次工作階段失敗，略過：{e}")
 
     def _build_pipeline(self, d: Detection, mode: str, key: str) -> Pipeline:
         """
