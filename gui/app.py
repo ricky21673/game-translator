@@ -299,11 +299,14 @@ class MainWindow(QWidget):
 
         # 開始／還原按鈕
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("開始")
+        self.start_btn = QPushButton("翻譯並開啟")
         self.start_btn.setEnabled(False)
+        self.launch_btn = QPushButton("一般開啟")
+        self.launch_btn.setEnabled(False)
         self.restore_btn = QPushButton("還原遊戲（移除翻譯修改）")
         self.restore_btn.setEnabled(False)
         btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.launch_btn)
         btn_row.addWidget(self.restore_btn)
         lay.addLayout(btn_row)
 
@@ -317,6 +320,7 @@ class MainWindow(QWidget):
         self.model_refresh_btn.clicked.connect(self.on_refresh_models)
         self.engine_box.currentTextChanged.connect(self.on_engine_changed)
         self.start_btn.clicked.connect(self.on_start)
+        self.launch_btn.clicked.connect(self.on_launch_only)
         self.restore_btn.clicked.connect(self.on_restore)
 
         # 依預設引擎套一次條件顯示（建構時就要正確，不必等使用者切換一次）
@@ -407,6 +411,7 @@ class MainWindow(QWidget):
             "可以開始翻譯" if ok else "此引擎尚未支援（之後由 OCR／專屬 adapter 處理）")
         # 核心規則：沒選到遊戲或引擎不支援 → 鎖住「開始」與「還原」
         self.start_btn.setEnabled(ok)
+        self.launch_btn.setEnabled(True)  # 選了遊戲就能「一般開啟」（只跑該 exe，與是否翻過無關）
         self.restore_btn.setEnabled(can_restore(self.detection))
 
     def on_pick_dict(self):
@@ -482,6 +487,18 @@ class MainWindow(QWidget):
         return Pipeline(cache, translator, target_lang="ZH", source_lang="JA",
                         postprocess=postprocess, global_cache=global_cache,
                         store_converted=self.store_converted_checkbox.isChecked())
+
+    def on_launch_only(self):
+        # 一般開啟：直接啟動已選遊戲，不部署/不翻/不起 server。
+        # 工具已被強制進沙盒，故從這裡啟動的遊戲也會在同一個沙盒內。
+        if not self.exe_path:
+            self.info.setText("請先選擇遊戲主程式")
+            return
+        try:
+            launch_game(self.exe_path)
+            self.info.setText("已直接啟動遊戲（未重新翻譯）")
+        except Exception as e:
+            self.info.setText(f"啟動失敗：{e}")
 
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）

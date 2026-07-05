@@ -342,3 +342,47 @@ def test_deepl_mode_passes_none_to_deploy(tmp_path, monkeypatch):
     assert captured["offline_dict"] is None
     if win.server:
         win.server.stop()
+
+
+def test_launch_only_launches_selected_game(monkeypatch):
+    # 有選遊戲 → on_launch_only 呼叫 launch_game(exe_path)
+    called = {}
+    monkeypatch.setattr(app_module, "launch_game", lambda p: called.setdefault("path", p))
+    win = app_module.MainWindow()
+    win.exe_path = r"C:\game\Game.exe"
+    win.on_launch_only()
+    assert called.get("path") == r"C:\game\Game.exe"
+    assert "已直接啟動" in win.info.text()
+
+
+def test_launch_only_no_game_does_nothing(monkeypatch):
+    # 沒選遊戲 → 不呼叫 launch_game、不崩、提示先選遊戲
+    called = {}
+    monkeypatch.setattr(app_module, "launch_game", lambda p: called.setdefault("path", p))
+    win = app_module.MainWindow()
+    win.exe_path = None
+    win.on_launch_only()
+    assert "path" not in called
+    assert "請先選擇遊戲" in win.info.text()
+
+
+def test_launch_only_handles_exception(monkeypatch):
+    # launch_game 丟例外 → 狀態列顯示失敗、不逸出
+    def boom(p):
+        raise RuntimeError("x")
+    monkeypatch.setattr(app_module, "launch_game", boom)
+    win = app_module.MainWindow()
+    win.exe_path = r"C:\game\Game.exe"
+    win.on_launch_only()
+    assert "啟動失敗" in win.info.text()
+
+
+def test_launch_btn_disabled_initially_enabled_after_apply(tmp_path):
+    # 初始 disabled；套用遊戲後 enabled
+    game_dir, www = _mk_mv_game(tmp_path)
+    exe = game_dir / "Game.exe"
+    exe.write_text("", encoding="utf-8")
+    win = app_module.MainWindow()
+    assert win.launch_btn.isEnabled() is False
+    win._apply_game(str(exe))
+    assert win.launch_btn.isEnabled() is True
