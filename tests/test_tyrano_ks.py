@@ -128,3 +128,49 @@ def test_apply_translations_data_array_keeps_non_japanese_and_unmapped():
     mapping = {"開始ですか": "要開始嗎"}
     result = apply_translations(text, mapping)
     assert result == '[3,"start","要開始嗎"]\n'
+
+
+# --- 標籤屬性顯示文字支援（新增）---
+
+
+def test_extract_tag_attr_whitelisted_display_text():
+    ks = '[dialog type="confirm" text="直前にプレイしたデータをロードします" target="autoload_ok"]\n'
+    segs = extract_segments(ks)
+    assert "直前にプレイしたデータをロードします" in segs
+    assert "autoload_ok" not in segs  # target 非白名單，不抽
+    assert "confirm" not in segs      # type 非白名單，不抽
+
+
+def test_extract_tag_attr_excludes_name_and_expr_and_ascii():
+    # name（角色識別字）不抽；& 變數運算式不抽；無日文值不抽
+    assert extract_segments('[chara_part name="夢乃" text="こんにちは"]\n') == ["こんにちは"]
+    assert extract_segments('[glink text="&f.chara_name[0][1]"]\n') == []
+    assert extract_segments('[button text="OK"]\n') == []
+
+
+def test_extract_tag_attr_multiple_attrs_and_tags():
+    assert extract_segments('[button text="回想" hint="說明する"]\n') == ["回想", "說明する"]
+    assert extract_segments('[a text="甲する"][b label="乙する"]\n') == ["甲する", "乙する"]
+
+
+def test_apply_tag_attr_replaces_only_whitelisted():
+    ks = '[dialog text="直前にプレイしたデータをロードします" label_ok="はい" target="ok"]\n'
+    mapping = {"直前にプレイしたデータをロードします": "讀取剛剛遊玩的存檔？", "はい": "是"}
+    out = apply_translations(ks, mapping)
+    assert 'text="讀取剛剛遊玩的存檔？"' in out
+    assert 'label_ok="是"' in out
+    assert 'target="ok"' in out  # 結構屬性原樣保留
+
+
+def test_apply_tag_attr_leaves_name_and_expr_untouched():
+    ks = '[chara_part name="夢乃" text="こんにちは"][glink text="&f.x"]\n'
+    mapping = {"夢乃": "夢乃譯", "こんにちは": "你好", "&f.x": "壞掉"}
+    out = apply_translations(ks, mapping)
+    assert 'name="夢乃"' in out      # name 不碰（即使 mapping 有）
+    assert 'text="你好"' in out       # text 白名單 → 翻
+    assert 'text="&f.x"' in out       # & 運算式不碰
+
+
+def test_apply_tag_attr_no_mapping_keeps_original():
+    ks = '[dialog text="未翻的日文"]\n'
+    assert apply_translations(ks, {}) == ks  # 無對應 → 原樣保留

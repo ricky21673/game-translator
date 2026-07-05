@@ -35,6 +35,11 @@ _TRAILING_TAGS_RE = re.compile(r"((?:\[[^\]]*\])+)\s*$")
 _DATA_ARRAY_RE = re.compile(r"^\s*\[\s*\d")
 # 雙引號字串（簡單版，不處理 \" 跳脫）
 _QUOTED_STR_RE = re.compile(r'"([^"]*)"')
+# 標籤屬性白名單：只翻屬「玩家可見顯示文字」的屬性。刻意排除 name（識別字）、
+# exp（JS 運算式）、jname/initial（存疑）、storage/target/graphic/cond/role… 等結構屬性。
+_TEXT_ATTRS = {"text", "hint", "label", "label_ok", "label_cancel"}
+# 標籤屬性比對：屬性名（字母/底線）= 雙引號值。簡單版，不處理值內 \" 跳脫。
+_ATTR_RE = re.compile(r'([a-zA-Z_]+)="([^"]*)"')
 
 
 def _is_translatable_line(stripped: str) -> bool:
@@ -60,6 +65,13 @@ def _is_data_array_line(stripped: str) -> bool:
     這可與 tyrano 標籤行（`[chara_part name="..."]`，`[` 後接字母）明確區隔。
     """
     return bool(_DATA_ARRAY_RE.match(stripped))
+
+
+def _is_translatable_attr_value(attr: str, value: str) -> bool:
+    """標籤屬性值是否為「該翻的日文顯示文字」：屬性在白名單、值非空、
+    不以 & 開頭（變數運算式）、且含日文假名/CJK。"""
+    return (attr.lower() in _TEXT_ATTRS and bool(value)
+            and not value.startswith("&") and bool(_JP_CJK_RE.search(value)))
 
 
 def _split_trailing_tags(stripped: str) -> tuple[str, str]:
@@ -97,6 +109,13 @@ def extract_segments(ks_text: str) -> list[str]:
             for content in _QUOTED_STR_RE.findall(stripped):
                 if _JP_CJK_RE.search(content):
                     segments.append(content)
+            continue
+        # 標籤行（以 [ 開頭、非資料陣列行）：抽白名單屬性中的日文顯示文字。
+        # 純文字行不以 [ 開頭，故互斥；資料陣列行已於上方攔截。
+        if stripped.startswith("["):
+            for attr, value in _ATTR_RE.findall(stripped):
+                if _is_translatable_attr_value(attr, value):
+                    segments.append(value)
             continue
         if not _is_translatable_line(stripped):
             continue
@@ -145,6 +164,21 @@ def apply_translations(ks_text: str, mapping: dict[str, str]) -> str:
                 return f'"{translation}"'
 
             new_body = _QUOTED_STR_RE.sub(_replace_quoted, body)
+            out_lines.append(f"{new_body}{newline}")
+            continue
+
+        # 標籤行：只替換白名單屬性的日文顯示文字，其餘屬性/結構原樣保留。
+        if stripped.startswith("["):
+
+            def _replace_attr(m: "re.Match[str]") -> str:
+                attr, value = m.group(1), m.group(2)
+                if _is_translatable_attr_value(attr, value):
+                    translation = mapping.get(value)
+                    if translation and translation != value:
+                        return f'{attr}="{translation}"'
+                return m.group(0)
+
+            new_body = _ATTR_RE.sub(_replace_attr, body)
             out_lines.append(f"{new_body}{newline}")
             continue
 
