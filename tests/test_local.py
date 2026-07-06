@@ -4,6 +4,7 @@ import requests
 from core.translators.local import (
     LocalTranslator,
     MAX_RETRIES,
+    ABORT_AFTER_CONSECUTIVE_FAILURES,
     SAKURA_SYSTEM_PROMPT,
     SAKURA_USER_PREFIX,
 )
@@ -217,3 +218,72 @@ def test_all_sentences_fail_returns_all_original_without_raising():
     out = t.translate(["こんにちは", "さようなら"], target_lang="ZH")
 
     assert out == ["こんにちは", "さようなら"]
+
+
+# -- 熔斷器：連續失敗達門檻就中止整批（擋掉「模型名打錯→噴上萬行→整片沒翻」）------
+
+
+def test_circuit_breaker_aborts_after_consecutive_failures():
+    # 系統性故障（每句都 404）：連續失敗達門檻就中止整批、丟例外，不再空跑整片遊戲
+    sess = FakeSession(FakeResp(404))
+    t = LocalTranslator("no-such-model", session=sess)
+    texts = ["文%d" % i for i in range(20)]
+    with pytest.raises(TranslationError) as e:
+        t.translate(texts, target_lang="ZH")
+    assert e.value.kind == "model"
+    assert "已中止整批翻譯" in str(e.value)
+    # 只跑到門檻就停：門檻句數 ×（第一次 + 重試）次呼叫，不會把 20 句全打完
+    assert len(sess.calls) == ABORT_AFTER_CONSECUTIVE_FAILURES * (MAX_RETRIES + 1)
+
+
+def test_circuit_breaker_model_message_hints_name_mismatch():
+    # 模型類故障的中止訊息要點名模型、並提示用 ollama list 核對名字（就是這次的坑）
+    sess = FakeSession(FakeResp(404))
+    t = LocalTranslator("hf.co/SakuraLLM/Foo:IQ4_XS", session=sess)
+    with pytest.raises(TranslationError) as e:
+        t.translate(["あ"] * ABORT_AFTER_CONSECUTIVE_FAILURES, target_lang="ZH")
+    msg = str(e.value)
+    assert "hf.co/SakuraLLM/Foo:IQ4_XS" in msg
+    assert "ollama list" in msg
+
+
+def test_circuit_breaker_network_message_hints_service():
+    # 連不上服務類故障 → 提示確認 Ollama 是否啟動
+    sess = RaisingSession()
+    t = LocalTranslator("qwen2.5:14b", session=sess)
+    with pytest.raises(TranslationError) as e:
+        t.translate(["あ"] * ABORT_AFTER_CONSECUTIVE_FAILURES, target_lang="ZH")
+    assert e.value.kind == "network"
+    assert "Ollama" in str(e.value)
+
+
+def test_circuit_breaker_resets_on_success_never_aborts():
+    # 失敗被成功打斷 → 連續數歸零，永遠達不到門檻 → 不中止，維持 fail-soft
+    fails_per_group = ABORT_AFTER_CONSECUTIVE_FAILURES - 1
+    behaviors: dict = {}
+    texts: list[str] = []
+    for grp in range(3):
+        for k in range(fails_per_group):
+            key = f"fail{grp}_{k}"
+            behaviors[key] = ("raise",)
+            texts.append(key)
+        ok = f"ok{grp}"
+        behaviors[ok] = ("ok", f"譯{grp}")
+        texts.append(ok)
+    sess = PerSentenceFakeSession(behaviors)
+    t = LocalTranslator("qwen2.5:14b", session=sess)
+
+    out = t.translate(texts, target_lang="ZH")  # 不應丟例外
+
+    assert len(out) == len(texts)
+    assert out[0] == "fail0_0"          # 失敗句保留原文
+    assert out[fails_per_group] == "譯0"  # 成功句得到譯文
+
+
+def test_circuit_breaker_threshold_is_configurable():
+    # 門檻可調：abort_after=2 時，連續 2 句失敗就中止
+    sess = FakeSession(FakeResp(404))
+    t = LocalTranslator("no-such-model", session=sess, abort_after=2)
+    with pytest.raises(TranslationError):
+        t.translate(["文A", "文B", "文C", "文D"], target_lang="ZH")
+    assert len(sess.calls) == 2 * (MAX_RETRIES + 1)

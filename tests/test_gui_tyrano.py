@@ -145,7 +145,7 @@ def test_tyrano_on_start_reports_error_when_deploy_fails(tmp_path, monkeypatch):
     _run_event_loop_until(lambda: win._tyrano_thread is None)
 
     assert launched["called"] is False
-    assert "Tyrano 部署失敗" in win.info.text()
+    assert "部署失敗" in win.info.text()
     assert win.start_btn.isEnabled() is True
 
 

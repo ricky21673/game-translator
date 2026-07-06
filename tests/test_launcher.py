@@ -71,9 +71,9 @@ def test_deploy_appends_to_nonempty_plugins_with_brackets(tmp_path):
     # 結構仍以 ]; 收尾
     assert text.rstrip().endswith("];")
 
-def test_deploy_raises_when_index_html_has_no_plugins_js_load_point(tmp_path):
-    # index.html 內沒有 js/plugins.js 的 script tag（例如只有別的 script），
-    # 找不到插入點時應明確 raise，而不是靜默 count=0、boot 沒被插入
+def test_deploy_falls_back_to_body_when_no_standard_load_point(tmp_path):
+    # ⑥ index.html 沒有 js/plugins.js｜js/main.js 的 script tag（改過 loader 的遊戲），
+    # 找不到標準載入點時應「退而注入 </body> 之前」，而不是整個部署失敗。
     www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
     js.joinpath("plugins.js").write_text("var $plugins =\n[\n];\n", encoding="utf-8")
     www.joinpath("index.html").write_text(
@@ -81,8 +81,65 @@ def test_deploy_raises_when_index_html_has_no_plugins_js_load_point(tmp_path):
         encoding="utf-8")
     src = tmp_path / "src"; src.mkdir()
     (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(str(www), 12345, maps=[],
+                      bridge_src=str(src / "ZZ_Translator_Bridge.js"))  # 不應 raise
+    html = www.joinpath("index.html").read_text(encoding="utf-8")
+    assert "translator_boot.js" in html
+    assert html.index("translator_boot.js") < html.index("</body>")
+
+
+def test_deploy_fallback_prefers_head_over_body(tmp_path):
+    # ⑥ 有 </head> 時，備援注入應優先放在 </head> 前（越早載入越好）
+    www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
+    js.joinpath("plugins.js").write_text("var $plugins =\n[\n];\n", encoding="utf-8")
+    www.joinpath("index.html").write_text(
+        "<html><head></head><body><script src='js/other.js'></script></body></html>",
+        encoding="utf-8")
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    deploy_mv_adapter(str(www), 1, maps=[],
+                      bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+    html = www.joinpath("index.html").read_text(encoding="utf-8")
+    assert html.index("translator_boot.js") < html.index("</head>")
+
+
+def test_deploy_raises_clearly_when_plugins_js_missing(tmp_path):
+    # ④ 前置校驗：缺 plugins.js 時給清楚訊息，而不是難懂的 FileNotFoundError
+    www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
+    www.joinpath("index.html").write_text("<html><body></body></html>", encoding="utf-8")
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="plugins.js"):
+        deploy_mv_adapter(str(www), 1, maps=[],
+                          bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+
+
+def test_deploy_rolls_back_on_failure(tmp_path):
+    # ④ 失敗回滾：部署已改到一半（plugins.js 已改、boot 已寫）後才失敗時，
+    # 應把已做的修改全數還原，不留壞一半的遊戲。
+    # 觸發點：index.html 完全沒有可注入位置（無載入點、無 </head>／</body>）→ 最後一步 raise，
+    # 此時 plugins.js 已被改、boot.js 已寫、.trbak 已建立，正好驗得到回滾。
+    www = tmp_path / "www"; js = www / "js"; js.mkdir(parents=True)
+    plugins_path = js / "plugins.js"
+    index_path = www / "index.html"
+    plugins_path.write_text("var $plugins =\n[\n];\n", encoding="utf-8")
+    index_path.write_text("<html>沒有任何可注入位置</html>", encoding="utf-8")
+    original_plugins = plugins_path.read_text(encoding="utf-8")
+    original_index = index_path.read_text(encoding="utf-8")
+    src = tmp_path / "src"; src.mkdir()
+    (src / "ZZ_Translator_Bridge.js").write_text("// bridge", encoding="utf-8")
+
     with pytest.raises(RuntimeError):
-        deploy_mv_adapter(str(www), 12345, maps=[], bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+        deploy_mv_adapter(str(www), 1, maps=[],
+                          bridge_src=str(src / "ZZ_Translator_Bridge.js"))
+
+    # 回滾後：原始檔完好、沒有殘留的 .trbak 或我方新增檔
+    assert plugins_path.read_text(encoding="utf-8") == original_plugins
+    assert index_path.read_text(encoding="utf-8") == original_index
+    assert not os.path.isfile(str(plugins_path) + ".trbak")
+    assert not os.path.isfile(str(index_path) + ".trbak")
+    assert not os.path.isfile(os.path.join(str(www), "js", "plugins", "ZZ_Translator_Bridge.js"))
+    assert not os.path.isfile(os.path.join(str(www), "js", "translator_boot.js"))
 
 
 # ---------------------------------------------------------------------------

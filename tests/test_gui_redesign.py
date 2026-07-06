@@ -17,6 +17,19 @@ from core.detector import Detection
 _qapp = QApplication.instance() or QApplication([])
 
 
+class _FakeSettings:
+    """記憶體版 QSettings，避免測試污染真實登錄檔、也讓「上次模型」可控。"""
+
+    def __init__(self, data=None):
+        self._d = dict(data or {})
+
+    def value(self, key, default=None):
+        return self._d.get(key, default)
+
+    def setValue(self, key, val):
+        self._d[key] = val
+
+
 def _mk_mv_game(tmp_path):
     # 建立最小可用的 MV 遊戲資料夾（含 plugins.js、index.html、rpg_core.js 供 detect() 判型）
     game_dir = tmp_path / "game"
@@ -124,6 +137,155 @@ def test_refresh_button_empty_list_keeps_existing_and_reports_status(monkeypatch
     after = [win.model_box.itemText(i) for i in range(win.model_box.count())]
     assert after == before  # 抓不到清單時維持既有內容，不清空
     assert "未偵測到本機 Ollama 模型" in win.info.text()
+
+
+# -- 模型選擇「跟著設定走」：純函式決策 + 存/讀設定 + 重新整理自動選中 ----------
+
+
+def test_choose_model_keeps_current_if_installed():
+    assert app_module.choose_model_selection(["a", "b"], "b", None) == "b"
+
+
+def test_choose_model_prefers_saved_when_current_default_missing():
+    # 框內還停在預設 sakura（沒安裝），但上次用過的 b 仍在清單 → 選回 b
+    assert app_module.choose_model_selection(["a", "b"], "sakura", "b") == "b"
+
+
+def test_choose_model_auto_picks_sakura_when_on_default():
+    names = ["gemma4:latest", "hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS"]
+    assert (app_module.choose_model_selection(names, "sakura", None)
+            == "hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS")
+
+
+def test_choose_model_auto_picks_first_when_no_sakura_and_on_default():
+    assert (app_module.choose_model_selection(
+        ["gemma4:latest", "qwen2.5:7b"], "sakura", None) == "gemma4:latest")
+
+
+def test_choose_model_respects_custom_uninstalled_entry():
+    # 使用者手打了尚未安裝的自訂名（非預設）→ 保留，不擅自蓋掉
+    assert (app_module.choose_model_selection(
+        ["gemma4:latest"], "my-model:latest", None) == "my-model:latest")
+
+
+def test_choose_model_empty_names_returns_current():
+    assert app_module.choose_model_selection([], "sakura", None) == "sakura"
+
+
+def test_populate_auto_selects_installed_sakura_when_box_on_default(monkeypatch):
+    # 核心情境：框內停在沒安裝的預設 sakura，重新整理後應自動選中實際安裝的 Sakura
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    win = app_module.MainWindow()
+    win.settings = _FakeSettings()  # 無上次紀錄
+    win.model_box.setCurrentText("sakura")
+    sakura = "hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS"
+    win._populate_model_box([sakura, "gemma4:latest"])
+    assert win.model_box.currentText() == sakura
+
+
+def test_populate_prefers_saved_model_over_autopick(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    win = app_module.MainWindow()
+    win.settings = _FakeSettings({"local/last_model": "gemma4:latest"})
+    win.model_box.setCurrentText("sakura")
+    win._populate_model_box(
+        ["hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS", "gemma4:latest"])
+    assert win.model_box.currentText() == "gemma4:latest"
+
+
+def test_populate_keeps_custom_uninstalled_entry(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    win = app_module.MainWindow()
+    win.settings = _FakeSettings()
+    win.model_box.setCurrentText("my-model:latest")
+    win._populate_model_box(["gemma4:latest"])
+    assert win.model_box.currentText() == "my-model:latest"
+
+
+def test_restores_saved_model_on_init(monkeypatch):
+    # 重開時，model_box 應還原上次用過的模型（跨重開沿用設定）
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    saved = "hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS"
+    monkeypatch.setattr(app_module, "QSettings",
+                        lambda *a, **kw: _FakeSettings({"local/last_model": saved}))
+    win = app_module.MainWindow()
+    assert win.model_box.currentText() == saved
+
+
+def test_remember_model_persists_selection(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    win = app_module.MainWindow()
+    fake = _FakeSettings()
+    win.settings = fake
+    win.model_box.addItem("gemma4:latest")
+    win.model_box.setCurrentText("gemma4:latest")
+    win._remember_model()
+    assert fake.value("local/last_model") == "gemma4:latest"
+
+
+# -- 開跑前秒級擋關（pre-flight）+ 掃描按鈕 -----------------------------------
+
+
+def test_preflight_passes_when_model_installed(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    monkeypatch.setattr(app_module, "check_service",
+                        lambda *a, **kw: (True, ["sakura", "gemma4:latest"], "ok"))
+    win = app_module.MainWindow()
+    assert win._preflight_local_ok("sakura") is True
+
+
+def test_preflight_blocks_when_model_name_mismatch(monkeypatch):
+    # 就是這次的坑：選的名字沒在已安裝清單裡 → 擋下，並在狀態列點出「對不上」
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        app_module, "check_service",
+        lambda *a, **kw: (True, ["hf.co/SakuraLLM/Sakura-GalTransl-7B-v3.7:IQ4_XS"], "ok"))
+    win = app_module.MainWindow()
+    assert win._preflight_local_ok("sakura") is False
+    assert "對不上" in win.info.text()
+
+
+def test_preflight_blocks_when_service_down(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    monkeypatch.setattr(app_module, "check_service",
+                        lambda *a, **kw: (False, [], "連不上 Ollama 服務"))
+    win = app_module.MainWindow()
+    assert win._preflight_local_ok("sakura") is False
+    assert "連不上 Ollama" in win.info.text()
+
+
+def test_rpgmaker_local_start_aborts_before_deploy_on_bad_model(tmp_path, monkeypatch):
+    # 端到端：模型名對不上時，_on_start_rpgmaker 應在部署/開遊戲「之前」就擋下，
+    # 不呼叫 deploy_mv_adapter、不呼叫 launch_game（正是這次「部署+開遊戲後才 404」的根治）
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    monkeypatch.setattr(app_module, "check_service",
+                        lambda *a, **kw: (True, ["gemma4:latest"], "ok"))
+    called = {"deploy": False, "launch": False}
+    monkeypatch.setattr(app_module, "deploy_mv_adapter",
+                        lambda *a, **kw: called.__setitem__("deploy", True))
+    monkeypatch.setattr(app_module, "launch_game",
+                        lambda *a, **kw: called.__setitem__("launch", True))
+
+    game_dir, www = _mk_mv_game(tmp_path)
+    win = app_module.MainWindow()
+    win.exe_path = str(game_dir / "Game.exe")
+    win.detection = Detection("mv", str(game_dir), str(www), str(www / "js"), str(www))
+    win.model_box.setCurrentText("sakura")  # 沒安裝的名字
+
+    win._on_start_rpgmaker("local", "")
+
+    assert called["deploy"] is False
+    assert called["launch"] is False
+    assert "對不上" in win.info.text()
+
+
+def test_scan_button_hidden_unless_local_engine(monkeypatch):
+    monkeypatch.setattr(app_module, "list_ollama_models", lambda *a, **kw: [])
+    win = app_module.MainWindow()
+    win.engine_box.setCurrentText("DeepL")
+    assert win.model_scan_btn.isHidden() is True
+    win.engine_box.setCurrentText("本地 Ollama")
+    assert win.model_scan_btn.isHidden() is False
 
 
 # -- offline 引擎必選字典 -----------------------------------------------------

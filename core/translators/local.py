@@ -1,3 +1,5 @@
+import threading
+
 import requests
 from .base import Translator
 from .deepl import TranslationError
@@ -8,6 +10,12 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 11434
 TIMEOUT = 120  # 本地 LLM 可能較慢，timeout 拉長
 MAX_RETRIES = 2  # 單句失敗後最多重試次數（不含第一次嘗試）
+# 熔斷門檻：連續失敗達此句數就中止整批翻譯。
+# 模型名打錯 / Ollama 沒開這類「系統性」故障會讓每一句都失敗，若仍逐句 fail-soft
+# 下去，會噴上萬行相同錯誤、整片遊戲一句沒翻卻看不出哪裡錯（實際踩過的坑）。
+# 達到門檻就丟出帶明確原因的例外，讓上層（GUI/背景 worker）能立刻攔到並回報，
+# 不再空跑數小時。偶發的單句逾時（遠小於門檻）仍維持 fail-soft，不影響長時間全翻。
+ABORT_AFTER_CONSECUTIVE_FAILURES = 5
 
 SYSTEM_PROMPT = (
     "你是專業的日文遊戲翻譯，把使用者輸入翻成簡體中文；"
@@ -35,13 +43,21 @@ class LocalTranslator(Translator):
     """
 
     def __init__(self, model: str, host: str = DEFAULT_HOST,
-                 port: int = DEFAULT_PORT, session=None):
+                 port: int = DEFAULT_PORT, session=None,
+                 abort_after: int = ABORT_AFTER_CONSECUTIVE_FAILURES):
         self.model = model
         self.url = f"http://{host}:{port}/api/chat"
         self.session = session or requests.Session()
         # 模型名含 "sakura"（大小寫不拘）即視為 Sakura 系列模型，
         # 送 /api/chat 時改用 Sakura 專用提示詞格式。
         self._sakura = "sakura" in model.lower()
+        # 熔斷器狀態：連續失敗計數。刻意放在「實例」上跨 translate() 呼叫累計——
+        # 即時 server 路徑會把整片遊戲拆成很多次小批（每批 <= 50 句）分別呼叫，
+        # 計數若只活在單次 translate() 內就永遠歸零、擋不住系統性故障。
+        # ThreadingHTTPServer 併發呼叫，故用鎖保護此計數。
+        self.abort_after = abort_after
+        self._consecutive_failures = 0
+        self._fail_lock = threading.Lock()
 
     def translate(self, texts: list[str], target_lang: str = "ZH",
                   source_lang: str | None = None) -> list[str]:
@@ -53,22 +69,44 @@ class LocalTranslator(Translator):
         # 絕不向外拋出例外（fail-soft，不 fail-fast）。
         out: list[str] = []
         for text in texts:
-            out.append(self._call_with_retry(text))
+            translation, err = self._call_with_retry(text)
+            out.append(translation)
+            if err is None:
+                # 成功一句就清零連續失敗計數（熔斷只針對「持續」失敗）
+                with self._fail_lock:
+                    self._consecutive_failures = 0
+                continue
+            # 重試用盡仍失敗：保留原文、印警告續下一句（fail-soft），同時累計連續失敗數
+            print(f"[警告] 翻譯失敗，已保留原文繼續下一句：{text[:20]}（原因：{err}）")
+            with self._fail_lock:
+                self._consecutive_failures += 1
+                n = self._consecutive_failures
+            if n >= self.abort_after:
+                raise self._circuit_break_error(n, err)
         return out
 
-    def _call_with_retry(self, text: str) -> str:
-        # 對單一句子做重試：第一次嘗試 + 最多 MAX_RETRIES 次重試
-        last_err: Exception | None = None
+    def _call_with_retry(self, text: str) -> tuple[str, TranslationError | None]:
+        # 對單一句子做重試：第一次嘗試 + 最多 MAX_RETRIES 次重試。
+        # 成功回 (譯文, None)；重試用盡回 (原文, 最後一次的 TranslationError)。
+        last_err: TranslationError | None = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                return self._call(text)
+                return self._call(text), None
             except TranslationError as e:
                 last_err = e
+        return text, last_err
 
-        # 重試用盡仍失敗：保留原文，繼續下一句，不中斷整批
-        preview = text[:20]
-        print(f"[警告] 翻譯失敗，已保留原文繼續下一句：{preview}（原因：{last_err}）")
-        return text
+    def _circuit_break_error(self, n: int, err: TranslationError) -> TranslationError:
+        # 依最後一次失敗的種類，給出對症下藥的中止訊息（供 GUI/worker 直接顯示）。
+        if err.kind == "model":
+            hint = (f"：Ollama 找不到模型「{self.model}」，多半是名字沒對上，"
+                    "請用 `ollama list` 核對後把模型欄改成完全一致的名稱")
+        elif err.kind == "network":
+            hint = "：連不上 Ollama 服務，請確認 Ollama 已啟動（工作列圖示還在）"
+        else:
+            hint = f"（最後原因：{err}）"
+        return TranslationError(
+            err.kind, f"連續 {n} 句翻譯失敗，已中止整批翻譯{hint}")
 
     def _call(self, text: str) -> str:
         if self._sakura:
@@ -96,5 +134,7 @@ class LocalTranslator(Translator):
         if code == 200:
             return resp.json()["message"]["content"].strip()
         if code == 404:
-            raise TranslationError("model", "模型未安裝，請先 ollama pull")
+            # 404 = Ollama 找不到這個名字的模型（多半是「名字沒對上」，不一定是沒安裝）
+            raise TranslationError(
+                "model", f"Ollama 找不到模型「{self.model}」(404)")
         raise TranslationError("server", f"Ollama 回應狀態碼 {code}")

@@ -21,8 +21,51 @@ def _backup_if_missing(path: str) -> None:
         shutil.copyfile(path, trbak)
 
 
+def _inject_fallback(html: str, tag: str) -> tuple[str, int]:
+    """找不到標準 js/plugins.js｜js/main.js 載入點時的備援注入。
+
+    退而在 </head>（優先，最早）或 </body> 之前插入 tag，讓改過 loader 的遊戲
+    也能把 boot/dict_data 載進去，而不是整個部署失敗。回 (html, n)，n=命中數。
+    """
+    for anchor in ("</head>", "</body>"):
+        m = re.search(anchor, html, flags=re.IGNORECASE)
+        if m:
+            return html[:m.start()] + tag + html[m.start():], 1
+    return html, 0
+
+
 def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
                       bridge_src: str, offline_dict: dict | None = None) -> str:
+    """部署 MV/MZ adapter（含前置校驗與失敗自動回滾）。
+
+    - 前置校驗：缺 plugins.js／index.html 這類關鍵檔就「早退並給清楚訊息」，
+      而不是讓後面的 open() 噴難懂的 FileNotFoundError。
+    - 失敗回滾：部署過程中任一步丟例外，就把已做的修改還原（restore），
+      不把遊戲留在「改一半」的壞狀態（那正是會導致遊戲開不起來的原因）。
+    細部流程見 _deploy_mv_adapter_unsafe。
+    """
+    js_dir = os.path.join(www_dir, "js")
+    plugins_js = os.path.join(js_dir, "plugins.js")
+    index = os.path.join(www_dir, "index.html")
+    if not os.path.isfile(plugins_js):
+        raise RuntimeError(
+            f"找不到 {plugins_js}，這可能不是標準的 RPG Maker MV/MZ 遊戲資料夾")
+    if not os.path.isfile(index):
+        raise RuntimeError(f"找不到 {index}，無法注入翻譯橋接")
+
+    try:
+        return _deploy_mv_adapter_unsafe(www_dir, port, maps, bridge_src, offline_dict)
+    except Exception:
+        # 回滾要容錯、且不可蓋掉原始例外（原因才是使用者要看的）
+        try:
+            restore_mv_adapter(www_dir)
+        except Exception:
+            pass
+        raise
+
+
+def _deploy_mv_adapter_unsafe(www_dir: str, port: int, maps: list[dict],
+                              bridge_src: str, offline_dict: dict | None = None) -> str:
     """
     部署 MV/MZ adapter 到遊戲資料夾。
 
@@ -105,8 +148,11 @@ def deploy_mv_adapter(www_dir: str, port: int, maps: list[dict],
         html, n = re.subn(r'(<script[^>]*src=["\']js/(?:plugins|main)\.js["\'][^>]*>)',
                           tag + r"\1", html, count=1)
         if n == 0:
+            # ⑥ 找不到標準載入點（改過 loader 的 eroge MV 常見）→ 退而注入 </head>／</body>
+            html, n = _inject_fallback(html, tag)
+        if n == 0:
             raise RuntimeError(
-                "無法在 index.html 找到 js/plugins.js 或 js/main.js 的載入點，script 未能注入")
+                "index.html 結構異常，找不到任何可注入 script 的位置（無載入點、也無 </head>／</body>）")
         with open(index, "w", encoding="utf-8") as f:
             f.write(html)
     return dst

@@ -17,3 +17,14 @@ def global_dict_path() -> str:
     path = os.path.join(os.path.expanduser("~"), ".game_translator", "global_dict.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
+
+
+def log_path() -> str:
+    """回傳診斷 log 檔路徑：~/.game_translator/translator.log。
+
+    供 GUI 把「啟動失敗／掃描結果」等關鍵事件寫成一行一行，方便事後回報排查
+    （Discord 上直接叫人貼這個檔，不用靠截圖猜）。同樣順手確保父目錄存在。
+    """
+    path = os.path.join(os.path.expanduser("~"), ".game_translator", "translator.log")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path

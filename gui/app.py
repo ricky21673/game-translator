@@ -21,13 +21,14 @@ import sys
 from PySide6.QtCore import QObject, QThread, Signal, QSettings
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QComboBox, QLineEdit,
-    QVBoxLayout, QHBoxLayout, QFileDialog, QCheckBox, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QCheckBox, QGroupBox, QMessageBox,
 )
 
 from core.detector import detect, Detection
 from core.cache import DictCache
 from core.ollama_util import list_ollama_models
-from core.paths import global_dict_path
+from core.ollama_diag import check_service, diagnose, format_scan_result, OllamaDiagnosis
+from core.paths import global_dict_path, log_path
 from core.pipeline import Pipeline
 from core.postprocess import make_traditional_converter
 from core.server import TranslationServer
@@ -41,6 +42,26 @@ from version import __version__
 
 SUPPORTED = ("mv", "mz", "tyrano")  # 支援 MV、MZ 與 TyranoScript
 DEFAULT_LOCAL_MODEL = "sakura"
+
+
+def choose_model_selection(names, current, saved, default=DEFAULT_LOCAL_MODEL):
+    """重新整理模型清單後，決定 model_box 應選中哪個模型名稱（純函式，方便單測）。
+
+    規則（由高到低）：
+      1. 目前框內文字就是已安裝模型 → 尊重使用者當下選擇，維持不變。
+      2. 上次用過的模型(saved)仍在清單中 → 選它（跨重開沿用設定）。
+      3. 框內仍停在預設值(default)、而該預設其實沒安裝 → 自動改選一個實際
+         安裝的模型（優先含 "sakura" 的 galgame 專用模型，否則取清單第一個），
+         免得使用者被沒安裝的預設 `sakura` 一直卡在 404。
+      4. 其餘（使用者手打了尚未安裝的自訂名）→ 保留其輸入，不擅自蓋掉。
+    """
+    if current in names:
+        return current
+    if saved and saved in names:
+        return saved
+    if names and (not current or current == default):
+        return next((n for n in names if "sakura" in n.lower()), names[0])
+    return current
 
 # GUI 顯示字串 → 內部引擎值（同時也是 choose_translator_mode 用的 engine 值）。
 # 用 dict 保序（Python 3.7+ 保證插入順序），engine_box 依此順序加入選項。
@@ -203,6 +224,22 @@ class EncryptedMzWorker(QObject):
             self.error.emit(str(e))
 
 
+class ScanWorker(QObject):
+    """背景執行 Ollama 健檢/試翻（diagnose 會逐顆載入模型，慢，不能卡 UI 執行緒）。
+
+    只 emit 一次 finished，帶回 OllamaDiagnosis；全程吞例外（轉成 service_up=False
+    的結果），確保背景執行緒不會把未捕捉例外拋進 Qt 事件迴圈。
+    """
+    finished = Signal(object)  # OllamaDiagnosis
+
+    def run(self):
+        try:
+            diag = diagnose()
+        except Exception as e:  # noqa: BLE001 — 背景執行緒需吞例外
+            diag = OllamaDiagnosis(service_up=False, detail=f"掃描失敗：{e}")
+        self.finished.emit(diag)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -215,6 +252,11 @@ class MainWindow(QWidget):
         self.settings = QSettings("GameTranslator", "GameTranslator")
         self._tyrano_thread: QThread | None = None  # Tyrano 部署背景執行緒（進行中才有值）
         self._tyrano_worker: TyranoDeployWorker | None = None
+        self._scan_thread: QThread | None = None  # 模型掃描背景執行緒（進行中才有值）
+        self._scan_worker: ScanWorker | None = None
+        # 是否彈出對話框：無頭/測試（offscreen）平台沒有視窗系統，modal 對話框會阻塞，
+        # 故該環境下只更新狀態列/寫 log、不彈窗。正式桌面環境照常彈。
+        self._dialogs_enabled = os.environ.get("QT_QPA_PLATFORM") != "offscreen"
 
         lay = QVBoxLayout(self)
 
@@ -252,12 +294,22 @@ class MainWindow(QWidget):
         self.model_box = QComboBox()
         self.model_box.setEditable(True)  # 抓不到 Ollama 清單時仍可手動輸入模型名
         self.model_box.addItem(DEFAULT_LOCAL_MODEL)
+        # 還原上次用過的模型（跨重開沿用；沒有紀錄就維持預設 sakura）。之後切到
+        # local 會自動重新整理，_populate_model_box 會再依實際清單校正選擇。
+        saved_model = self.settings.value("local/last_model")
+        if isinstance(saved_model, str) and saved_model:
+            self.model_box.setCurrentText(saved_model)
         self.model_refresh_btn = QPushButton("重新整理")
+        # 掃描/測試模型：手動觸發，背景實測每顆模型能不能真的翻（會載入模型、較慢），
+        # 回報哪顆綠燈可用。與開跑前的「秒級擋關」分工：擋關只查名字對不對得上、不載模型。
+        self.model_scan_btn = QPushButton("掃描/測試模型")
         model_row.addWidget(self.model_box)
         model_row.addWidget(self.model_refresh_btn)
+        model_row.addWidget(self.model_scan_btn)
         engine_lay.addLayout(model_row)
-        # model_row 內的兩個 widget 一起隨「model」欄位群組顯示/隱藏
-        self._model_row_widgets = (self.model_box, self.model_refresh_btn)
+        # model_row 內的 widget 一起隨「model」欄位群組顯示/隱藏
+        self._model_row_widgets = (
+            self.model_box, self.model_refresh_btn, self.model_scan_btn)
 
         lay.addWidget(engine_box_group)
 
@@ -318,6 +370,10 @@ class MainWindow(QWidget):
         self.pick_btn.clicked.connect(self.on_pick)
         self.dict_btn.clicked.connect(self.on_pick_dict)
         self.model_refresh_btn.clicked.connect(self.on_refresh_models)
+        self.model_scan_btn.clicked.connect(self.on_scan_models)
+        # 使用者從下拉挑定模型時就記住（activated 只在互動選取時觸發，不會被
+        # 逐字輸入洗掉）；另在實際啟動翻譯時也會再存一次最終使用的模型。
+        self.model_box.activated.connect(self._remember_model)
         self.engine_box.currentTextChanged.connect(self.on_engine_changed)
         self.start_btn.clicked.connect(self.on_start)
         self.launch_btn.clicked.connect(self.on_launch_only)
@@ -349,17 +405,28 @@ class MainWindow(QWidget):
         names = list_ollama_models()
         self._populate_model_box(names)
 
+    def _remember_model(self, *_a) -> None:
+        # 把目前 model_box 的模型名稱寫進設定，供下次重開沿用。
+        text = self.model_box.currentText().strip()
+        if text:
+            self.settings.setValue("local/last_model", text)
+
     def _populate_model_box(self, names: list[str]) -> None:
-        # 把抓到的模型名稱填入 model_box，同時保留目前使用者已輸入/選取的文字
-        # （QComboBox.setEditable(True) 下 clear() 會清空當下文字，故先記住再還原）。
+        # 把抓到的模型名稱填入 model_box，並用 choose_model_selection 決定選中哪顆：
+        # 尊重使用者當下的有效選擇 / 沿用上次設定 / 或自動選一個實際安裝的模型，
+        # 避免一直卡在沒安裝的預設 sakura（QComboBox.setEditable(True) 下 clear()
+        # 會清掉當下文字，故先算好 chosen 再重建）。
         if not names:
             return
         current = self.model_box.currentText()
+        saved = self.settings.value("local/last_model")
+        chosen = choose_model_selection(
+            names, current, saved if isinstance(saved, str) else None)
         self.model_box.clear()
         self.model_box.addItems(names)
-        if current and current not in names:
-            self.model_box.addItem(current)
-        idx = self.model_box.findText(current)
+        if chosen and chosen not in names:
+            self.model_box.addItem(chosen)
+        idx = self.model_box.findText(chosen)
         if idx >= 0:
             self.model_box.setCurrentIndex(idx)
 
@@ -371,6 +438,87 @@ class MainWindow(QWidget):
             return
         self._populate_model_box(names)
         self.info.setText(f"已偵測到 {len(names)} 個本機 Ollama 模型")
+
+    # -- 防呆共用：log、錯誤對話框、開跑前秒級擋關 ---------------------------------
+
+    def _log(self, line: str) -> None:
+        # 寫一行到 ~/.game_translator/translator.log，供事後排查/回報。
+        # 全程容錯：寫檔失敗（權限/路徑）不影響主流程。
+        try:
+            with open(log_path(), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _notify_error(self, title: str, message: str) -> None:
+        # 失敗要「大聲」：同時更新狀態列（相容既有行為/測試）、寫 log、跳對話框。
+        # 對話框在無頭/測試環境可能無後端，包 try 不致命。
+        self.info.setText(f"{title}：{message}")
+        self._log(f"[錯誤] {title}：{message}")
+        if self._dialogs_enabled:
+            try:
+                QMessageBox.critical(self, title, message)
+            except Exception:
+                pass
+
+    def _preflight_local_ok(self, model: str) -> bool:
+        # 開跑前的秒級擋關：只打一個 GET /api/tags，不載入模型。
+        # 服務沒開、或選的模型名不在已安裝清單裡（就是這次的 404 坑）→ 擋下、回 False。
+        up, models, detail = check_service()
+        if not up:
+            self._notify_error("無法開始翻譯", detail)
+            return False
+        if model not in models:
+            installed = ("；已安裝：" + "、".join(models)) if models else "（目前沒有任何已安裝模型）"
+            self._notify_error(
+                "模型名稱對不上",
+                f"Ollama 沒有名為「{model}」的模型{installed}。\n"
+                "請按「重新整理」從下拉選實際安裝的名稱，或用 `ollama list` 核對；"
+                "也可按「掃描/測試模型」看哪顆可用。")
+            return False
+        return True
+
+    def on_scan_models(self) -> None:
+        # 手動掃描：背景實測每顆模型能不能翻，完成後跳對話框回報（會載入模型、較慢）。
+        if self._scan_thread is not None:
+            return  # 已在掃描中，不重複觸發
+        self.model_scan_btn.setEnabled(False)
+        self.info.setText("掃描中：正在逐一試翻已安裝模型…（首次載入模型較慢）")
+
+        thread = QThread()
+        worker = ScanWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_scan_finished)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(self._on_scan_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._scan_thread = thread
+        self._scan_worker = worker
+        thread.start()
+
+    def _on_scan_finished(self, diag: OllamaDiagnosis) -> None:
+        # 掃描完成：回報結果、log 起來，並把下拉自動選到第一顆可用模型（若目前選的不可用）。
+        summary = format_scan_result(diag)
+        self._log("[掃描] " + summary.replace("\n", " / "))
+        usable = diag.usable_models
+        if usable and self.model_box.currentText().strip() not in usable:
+            self.model_box.setCurrentText(usable[0])
+            self._remember_model()
+        self.info.setText(
+            f"掃描完成：{len(usable)} 顆可用" if diag.service_up else "掃描完成：服務未就緒")
+        if self._dialogs_enabled:
+            try:
+                box = QMessageBox.information if diag.service_up else QMessageBox.warning
+                box(self, "模型掃描結果", summary)
+            except Exception:
+                pass
+
+    def _on_scan_thread_finished(self) -> None:
+        # 執行緒事件迴圈真正退出後才釋放參照（比照 tyrano：避免 GC 掉仍在運行的 QThread）。
+        self._scan_thread = None
+        self._scan_worker = None
+        self.model_scan_btn.setEnabled(True)
 
     def _last_dir(self, key: str) -> str:
         # 取上次某類路徑(key)的所在資料夾，供檔案對話框當起始位置；不存在則回空字串
@@ -477,6 +625,7 @@ class MainWindow(QWidget):
             translator = NullTranslator()
         elif mode == "local":
             model = self.model_box.currentText().strip() or DEFAULT_LOCAL_MODEL
+            self.settings.setValue("local/last_model", model)  # 記住這次用的模型，下次重開沿用
             translator = LocalTranslator(model=model)
         else:
             translator = DeepLTranslator(key, free=True)
@@ -498,7 +647,7 @@ class MainWindow(QWidget):
             launch_game(self.exe_path)
             self.info.setText("已直接啟動遊戲（未重新翻譯）")
         except Exception as e:
-            self.info.setText(f"啟動失敗：{e}")
+            self._notify_error("啟動失敗", str(e))
 
     def on_start(self):
         # 核心規則守衛：沒選遊戲/不支援引擎 → 不能翻（邏輯層生效，不只靠 UI 的 setEnabled）
@@ -525,6 +674,12 @@ class MainWindow(QWidget):
         # RPG Maker（mv/mz）整合流程：讀地圖 → 起 server → 部署 adapter → （視 auto_launch）開遊戲
         # 全程 try/except 容錯：任一步驟丟例外（如填錯 DeepL key、斷網）都要顯示錯誤訊息，
         # 不可讓例外逸出導致 Qt 事件迴圈崩潰或 UI 靜默卡住。
+        # 開跑前秒級擋關（本地 Ollama）：先確認服務開著、模型名對得上，否則直接擋下，
+        # 不去部署遊戲檔、不開遊戲——免得像之前那樣部署+開遊戲後才發現每句 404。
+        if mode == "local":
+            model = self.model_box.currentText().strip() or DEFAULT_LOCAL_MODEL
+            if not self._preflight_local_ok(model):
+                return
         try:
             d = self.detection
             maps = []
@@ -580,7 +735,7 @@ class MainWindow(QWidget):
             else:
                 self.info.setText("已啟動遊戲，翻譯服務執行中…")
         except Exception as e:
-            self.info.setText(f"啟動失敗：{e}")
+            self._notify_error("啟動失敗", str(e))
 
     def _on_start_tyrano(self, mode: str, key: str) -> None:
         # TyranoScript 流程：部署「就是」批次預翻，不需要 server，也不用讀地圖。
@@ -590,7 +745,7 @@ class MainWindow(QWidget):
             d = self.detection
             pipe = self._build_pipeline(d, mode, key)
         except Exception as e:
-            self.info.setText(f"啟動失敗：{e}")
+            self._notify_error("啟動失敗", str(e))
             return
 
         self.start_btn.setEnabled(False)
@@ -647,7 +802,9 @@ class MainWindow(QWidget):
             self.info.setText(f"Tyrano 部署失敗：{e}")
 
     def _on_tyrano_error(self, message: str) -> None:
-        self.info.setText(f"Tyrano 部署失敗：{message}")
+        # tyrano 與加密 MZ 批次路徑共用的錯誤顯示。①熔斷等「整批中止」訊息會從這裡
+        # 冒出來（例如模型名對不上、Ollama 沒開），故改用大聲版（對話框 + log）。
+        self._notify_error("部署失敗", message)
 
     def _on_tyrano_thread_finished(self) -> None:
         # QThread 的事件迴圈已真正結束，此時釋放參照才安全；同時恢復「開始」鈕可用。
